@@ -27,52 +27,22 @@ type AuthPayload = {
     id: string;
     email: string;
     username: string | null;
-    crypto: {
-      wrappedARKByPassword: string;
-      wrappedARKByRecovery: string;
-      argon2Params: {
-        memoryKB: number;
-        iterations: number;
-        parallelism: number;
-        saltB64: string;
-      };
-      lastPasswordChangeAt: string;
-    };
   };
 };
 
 const smokeUser = {
   email: "core-v1-smoke@example.com",
   username: "core-v1-smoke",
-};
-
-const serverAuthProof = Buffer.from("core-v1-smoke-proof").toString("base64");
-
-const bootstrap = {
-  wrappedARKByPassword: Buffer.from("ark-password-smoke").toString("base64"),
-  wrappedARKByRecovery: Buffer.from("ark-recovery-smoke").toString("base64"),
-  argon2Params: {
-    memoryKB: 65536,
-    iterations: 3,
-    parallelism: 1,
-    saltB64: Buffer.from("smoke-salt").toString("base64"),
-  },
-  serverAuthProof,
+  password: "smoke-test-password-123!",
 };
 
 const manifestBlobId = "manifest-derived-core-v1-smoke";
-const ciphertext = new Uint8Array([11, 22, 33, 44, 55, 66]);
-const capabilityToken = Buffer.from("core-v1-smoke-capability").toString("base64");
-const wrappedAKShare = Buffer.from("wrapped-ak-share-smoke").toString("base64");
-const wrappedFEK = Buffer.from("wrapped-fek-smoke").toString("base64");
+const content = new Uint8Array([11, 22, 33, 44, 55, 66]);
 
 async function resetSmokeFixtures() {
-  await db.shareWrappedObjectKey.deleteMany({ where: { file: { ownerUserId: smokeUser.username } } }).catch(() => undefined);
-  await db.grantedAccess.deleteMany({ where: { share: { ownerUserId: smokeUser.username } } }).catch(() => undefined);
   await db.share.deleteMany({ where: { ownerUserId: smokeUser.username } }).catch(() => undefined);
   await db.blobTransport.deleteMany({ where: { ownerUserId: smokeUser.username } }).catch(() => undefined);
   await db.file.deleteMany({ where: { ownerUserId: smokeUser.username } }).catch(() => undefined);
-  await db.userCrypto.deleteMany({ where: { user: { email: smokeUser.email } } });
   await db.user.deleteMany({ where: { email: smokeUser.email } });
 }
 
@@ -113,89 +83,37 @@ describe("core v1 smoke flow", () => {
   it("runs register -> login -> initUpload -> blob upload -> commitManifest -> owner fetch -> share access", async () => {
     const registerData = await execGraphql<{ register: AuthPayload }>(
       /* GraphQL */ `
-        mutation Register(
-          $email: String!
-          $username: String!
-          $wrappedARKByPassword: String!
-          $wrappedARKByRecovery: String!
-          $argon2Params: Argon2ParamsInput!
-          $serverAuthProof: String!
-        ) {
-          register(
-            email: $email
-            username: $username
-            wrappedARKByPassword: $wrappedARKByPassword
-            wrappedARKByRecovery: $wrappedARKByRecovery
-            argon2Params: $argon2Params
-            serverAuthProof: $serverAuthProof
-          ) {
+        mutation Register($email: String!, $username: String!, $password: String!) {
+          register(email: $email, username: $username, password: $password) {
             token
-            user {
-              id
-              email
-              username
-              crypto {
-                wrappedARKByPassword
-                wrappedARKByRecovery
-                argon2Params {
-                  memoryKB
-                  iterations
-                  parallelism
-                  saltB64
-                }
-                lastPasswordChangeAt
-              }
-            }
+            user { id email username }
           }
         }
       `,
-      { ...smokeUser, ...bootstrap },
+      smokeUser,
     );
 
     expect(registerData.register.user.email).toBe(smokeUser.email);
-    expect(registerData.register.user.crypto.wrappedARKByPassword).toBe(bootstrap.wrappedARKByPassword);
-    expect(registerData.register.user.crypto.wrappedARKByRecovery).toBe(bootstrap.wrappedARKByRecovery);
-    expect(registerData.register.user.crypto.argon2Params).toEqual(bootstrap.argon2Params);
 
     const loginData = await execGraphql<{ login: AuthPayload }>(
       /* GraphQL */ `
-        mutation Login($emailOrUsername: String!, $serverAuthProof: String!) {
-          login(emailOrUsername: $emailOrUsername, serverAuthProof: $serverAuthProof) {
+        mutation Login($emailOrUsername: String!, $password: String!) {
+          login(emailOrUsername: $emailOrUsername, password: $password) {
             token
-            user {
-              id
-              email
-              username
-              crypto {
-                wrappedARKByPassword
-                wrappedARKByRecovery
-                argon2Params {
-                  memoryKB
-                  iterations
-                  parallelism
-                  saltB64
-                }
-                lastPasswordChangeAt
-              }
-            }
+            user { id email username }
           }
         }
       `,
-      {
-        emailOrUsername: smokeUser.email,
-        serverAuthProof,
-      },
+      { emailOrUsername: smokeUser.email, password: smokeUser.password },
     );
 
     expect(loginData.login.user.id).toBe(registerData.register.user.id);
-    expect(loginData.login.user.crypto).toEqual(registerData.register.user.crypto);
 
     const ownerToken = loginData.login.token;
     const ownerUserId = loginData.login.user.id;
 
     const initUploadData = await initUpload(ownerUserId, {
-      wrappedFEK,
-      totalCiphertextBytes: ciphertext.byteLength.toString(),
+      totalBytes: content.byteLength.toString(),
       chunkCount: 1,
     });
 
@@ -205,7 +123,7 @@ describe("core v1 smoke flow", () => {
       new Request(`http://localhost/api/blob/${manifestBlobId}`, {
         method: "PUT",
         headers: { authorization: `Bearer ${ownerToken}` },
-        body: ciphertext,
+        body: content,
       }),
       { blobId: manifestBlobId },
     );
@@ -213,21 +131,21 @@ describe("core v1 smoke flow", () => {
     expect(uploadResponse.status).toBe(200);
     await expect(uploadResponse.json()).resolves.toMatchObject({
       blobId: manifestBlobId,
-      ciphertextSizeBytes: ciphertext.byteLength.toString(),
+      sizeBytes: content.byteLength.toString(),
     });
 
     const commitData = await commitManifest(
       ownerUserId,
       initUploadData.fileId,
       manifestBlobId,
-      ciphertext.byteLength.toString(),
+      content.byteLength.toString(),
       1,
       [
         {
           blobId: manifestBlobId,
           storageKind: "LOCAL",
           storagePath: path.join(tempBlobRoot, manifestBlobId),
-          ciphertextSizeBytes: ciphertext.byteLength.toString(),
+          sizeBytes: content.byteLength.toString(),
         },
       ],
     );
@@ -243,33 +161,21 @@ describe("core v1 smoke flow", () => {
     );
 
     expect(blobContentResponse.status).toBe(200);
-    expect(new Uint8Array(await blobContentResponse.arrayBuffer())).toEqual(ciphertext);
+    expect(new Uint8Array(await blobContentResponse.arrayBuffer())).toEqual(content);
 
     const createShareData = await createShare(ownerUserId, {
       fileId: initUploadData.fileId,
-      capabilityToken,
-      wrappedAKShare,
-      wrappedFEK,
       allowContent: true,
-      allowMetadata: false,
       allowPreview: false,
     });
 
-    const accessShareData = await accessShare(createShareData.shareId, capabilityToken);
+    const accessShareData = await accessShare(createShareData.shareId, createShareData.token);
 
-    expect(accessShareData).toEqual({
+    expect(accessShareData).toMatchObject({
       shareId: createShareData.shareId,
-      wrappedAKShare,
+      fileId: initUploadData.fileId,
       allowContent: true,
-      allowMetadata: false,
       allowPreview: false,
-      wrappedObjectKeys: [
-        {
-          fileId: initUploadData.fileId,
-          primaryManifestBlobId: manifestBlobId,
-          wrappedFEK,
-        },
-      ],
     });
   });
 });

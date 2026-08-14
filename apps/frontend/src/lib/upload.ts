@@ -170,7 +170,7 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
 
   store.addUpload(placeholderId, totalBlobs, file.size, file.name);
   store.registerController(placeholderId, controller);
-  store.updateUpload(placeholderId, { status: UploadStatus.ENCRYPTING });
+  store.updateUpload(placeholderId, { status: UploadStatus.UPLOADING });
 
   let activeUploadId = placeholderId;
   let uploadStartMs: number | null = null;
@@ -272,8 +272,8 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
         requestMs = performance.now() - requestStartMs;
         blobRecord = {
           blobId: uploadResult.blobId,
-          ciphertextSizeBytes: uploadResult.ciphertextSizeBytes,
-          ciphertextHash: uploadResult.ciphertextHash,
+          sizeBytes: uploadResult.sizeBytes,
+          contentHash: uploadResult.contentHash,
           storageKind: uploadResult.storageKind,
           storagePath: uploadResult.storagePath,
           discordMessageId: uploadResult.discordMessageId,
@@ -283,7 +283,7 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
       }
 
       doneChunks.set(chunk.index, {
-        manifestEntry: { index: chunk.index, blobId, ciphertextSizeBytes: ciphertext.byteLength },
+        manifestEntry: { index: chunk.index, blobId, sizeBytes: ciphertext.byteLength },
         blobRecord,
       });
 
@@ -415,8 +415,8 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
 
     uploadedBlobRecords.push({
       blobId: manifestUploadResult.blobId,
-      ciphertextSizeBytes: manifestUploadResult.ciphertextSizeBytes,
-      ciphertextHash: manifestUploadResult.ciphertextHash,
+      sizeBytes: manifestUploadResult.sizeBytes,
+      contentHash: manifestUploadResult.contentHash,
       storageKind: manifestUploadResult.storageKind,
       storagePath: manifestUploadResult.storagePath,
       discordMessageId: manifestUploadResult.discordMessageId,

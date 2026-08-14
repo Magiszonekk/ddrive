@@ -11,8 +11,8 @@ function getAuthHeaders(): Record<string, string> {
 
 export interface BlobUploadResponse {
   blobId: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
   storageKind: "LOCAL" | "DISCORD" | "TELEGRAM";
   storagePath: string;
   discordMessageId?: string;
@@ -65,8 +65,8 @@ export async function uploadBlobToApi(
 
 export async function fetchBlobDescriptor(blobId: string): Promise<{
   blobId: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
   discordMessageId?: string;
   discordChannelId?: string;
   webhookId?: string;
@@ -81,8 +81,8 @@ export async function fetchBlobDescriptor(blobId: string): Promise<{
 
   return response.json() as Promise<{
     blobId: string;
-    ciphertextSizeBytes: string;
-    ciphertextHash?: string;
+    sizeBytes: string;
+    contentHash?: string;
     discordMessageId?: string;
     discordChannelId?: string;
     webhookId?: string;

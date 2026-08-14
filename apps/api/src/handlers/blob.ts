@@ -1,5 +1,6 @@
-// DiscorDrive v4 — Blob transport handlers (secure files v2)
+// ddrive v4 — Blob transport handlers
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { db } from "@ddv4/database";
 import type { BlobTransportMetadataDto } from "@ddv4/types/api";
 import { sha256Ciphertext } from "../storage/local-blobs.js";
@@ -15,7 +16,6 @@ import {
 import { getConfiguredReplicaKinds } from "../storage/replica-pools.js";
 import { writeThroughReplication } from "../storage/replication-worker.js";
 import { resolveRequestAuth, LeakedApiKeyError } from "../middleware/auth.js";
-import { constantTimeEqual } from "@ddv4/processing";
 
 type BlobRecord = {
   blobId: string;
@@ -25,25 +25,14 @@ type BlobRecord = {
   discordMessageId?: string | null;
   discordChannelId?: string | null;
   webhookId?: string | null;
-  ciphertextSizeBytes: bigint;
-  ciphertextHash: string | null;
+  sizeBytes: bigint;
+  contentHash: string | null;
   healthStatus: string | null;
   healthCheckedAt: Date | null;
   createdAt: Date;
-  /** Loaded via include; absent on un-backfilled rows and in legacy callers. */
   placements?: PlacementRow[];
 };
 
-// Shares the one auth resolver with GraphQL, so a credential that can create a
-// file row can also move its bytes. Previously this accepted Bearer tokens only,
-// which left API-key callers able to call initUpload but not upload a single chunk.
-/**
- * Resolves the caller, or the Response to return instead.
- *
- * A leaked-key mistake gets its own 400 rather than a blanket 401: the operator
- * has just put the decrypting half of their secret into request logs, and a bare
- * "Authentication required" would send them hunting for the wrong problem.
- */
 async function authOrResponse(
   req: Request,
 ): Promise<{ auth: { userId: string; email: string }; response?: never } | { auth?: never; response: Response }> {
@@ -70,8 +59,8 @@ function toMetadataDto(blob: BlobRecord): BlobTransportMetadataDto {
     ownerUserId: blob.ownerUserId,
     storageKind: blob.storageKind as BlobTransportMetadataDto["storageKind"],
     storagePath: blob.storagePath,
-    ciphertextSizeBytes: blob.ciphertextSizeBytes.toString(),
-    ciphertextHash: blob.ciphertextHash ?? undefined,
+    sizeBytes: blob.sizeBytes.toString(),
+    contentHash: blob.contentHash ?? undefined,
     healthStatus: blob.healthStatus as BlobTransportMetadataDto["healthStatus"],
     healthCheckedAt: blob.healthCheckedAt?.toISOString(),
     createdAt: blob.createdAt.toISOString(),
@@ -92,10 +81,6 @@ function looksLikeMissing(error: unknown): boolean {
 }
 
 export async function readBlobBytes(blob: BlobRecord): Promise<Uint8Array> {
-  // Placements are authoritative; legacy BlobTransport columns cover rows
-  // that predate the placement backfill. Candidates are tried in order
-  // (ACTIVE PRIMARY → ACTIVE REPLICA → ...) so a dead copy fails over to the
-  // next one instead of failing the request.
   const candidates = orderPlacementsForRead(blob.placements ?? []);
   let lastError: unknown = null;
 
@@ -106,9 +91,6 @@ export async function readBlobBytes(blob: BlobRecord): Promise<Uint8Array> {
       );
     } catch (error) {
       lastError = error;
-      // Self-heal: park definitively-missing copies as MISSING — the
-      // replication worker rebuilds them from a surviving copy. Transient
-      // errors (5xx, timeouts) are not marked; the next candidate just serves.
       if (placement.id && looksLikeMissing(error)) {
         void db.blobPlacement
           .updateMany({
@@ -185,13 +167,13 @@ export async function handleBlobContent(req: Request, params: { blobId: string }
   }
 
   try {
-    const ciphertext = await readBlobBytes(blob as BlobRecord);
-    const body = ciphertext.buffer.slice(ciphertext.byteOffset, ciphertext.byteOffset + ciphertext.byteLength) as ArrayBuffer;
+    const bytes = await readBlobBytes(blob as BlobRecord);
+    const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     return new Response(body, {
       status: 200,
       headers: {
         "Content-Type": "application/octet-stream",
-        "Content-Length": ciphertext.byteLength.toString(),
+        "Content-Length": bytes.byteLength.toString(),
       },
     });
   } catch (error) {
@@ -199,16 +181,19 @@ export async function handleBlobContent(req: Request, params: { blobId: string }
   }
 }
 
+function hashShareToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
 export async function handleBlobContentForShare(req: Request, params: { blobId: string }): Promise<Response> {
   const shareId = req.headers.get("x-share-id");
-  const capabilityToken = req.headers.get("x-capability-token");
-  if (!shareId || !capabilityToken) {
+  const shareToken = req.headers.get("x-share-token");
+  if (!shareId || !shareToken) {
     return Response.json({ error: "Share credentials required" }, { status: 401 });
   }
 
   const share = await db.share.findUnique({
     where: { shareId },
-    include: { wrappedObjectKeys: true },
   });
   if (!share) {
     return Response.json({ error: "Share not found" }, { status: 404 });
@@ -226,12 +211,10 @@ export async function handleBlobContentForShare(req: Request, params: { blobId: 
     return Response.json({ error: "Share view limit reached" }, { status: 410 });
   }
 
-  const matches = await constantTimeEqual(
-    new Uint8Array(share.capabilityToken),
-    Uint8Array.from(Buffer.from(capabilityToken, "base64")),
-  );
-  if (!matches) {
-    return Response.json({ error: "Invalid capability token" }, { status: 403 });
+  const presented = Buffer.from(hashShareToken(shareToken), "hex");
+  const stored = Buffer.from(share.tokenHash, "hex");
+  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) {
+    return Response.json({ error: "Invalid share token" }, { status: 403 });
   }
 
   const blob = await db.blobTransport.findUnique({
@@ -242,22 +225,18 @@ export async function handleBlobContentForShare(req: Request, params: { blobId: 
     return Response.json({ error: "Blob not found" }, { status: 404 });
   }
 
-  // Secure-files share download needs access to the manifest blob and its chunk blobs.
-  // The server cannot decrypt the manifest, so it cannot enumerate chunk membership here.
-  // We therefore scope access to blobs owned by the same owner as the validated share.
-  // Blob IDs are client-presented opaque identifiers; possession still requires the share capability token.
   if (blob.ownerUserId !== share.ownerUserId) {
     return Response.json({ error: "Blob not accessible via this share" }, { status: 403 });
   }
 
   try {
-    const ciphertext = await readBlobBytes(blob as BlobRecord);
-    const body = ciphertext.buffer.slice(ciphertext.byteOffset, ciphertext.byteOffset + ciphertext.byteLength) as ArrayBuffer;
+    const bytes = await readBlobBytes(blob as BlobRecord);
+    const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     return new Response(body, {
       status: 200,
       headers: {
         "Content-Type": "application/octet-stream",
-        "Content-Length": ciphertext.byteLength.toString(),
+        "Content-Length": bytes.byteLength.toString(),
       },
     });
   } catch (error) {
@@ -292,20 +271,20 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
     });
 
     const readBodyStartMs = performance.now();
-    const ciphertext = normalizeBlobUploadBody(await req.arrayBuffer());
+    const content = normalizeBlobUploadBody(await req.arrayBuffer());
     const readBodyMs = performance.now() - readBodyStartMs;
 
-    const ciphertextSizeBytes = BigInt(ciphertext.byteLength);
+    const sizeBytes = BigInt(content.byteLength);
 
     const hashStartMs = performance.now();
-    const ciphertextHash = sha256Ciphertext(ciphertext);
+    const contentHash = sha256Ciphertext(content);
     const hashMs = performance.now() - hashStartMs;
 
     const pool = getPrimaryPool();
     const storageKind = pool.kind;
 
     const storeStartMs = performance.now();
-    const written = await pool.put(auth.userId, params.blobId, ciphertext, {
+    const written = await pool.put(auth.userId, params.blobId, content, {
       requestId,
       uploadId: telemetry.uploadId,
       chunkIndex: telemetry.chunkIndex,
@@ -318,17 +297,13 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
     const discordChannelId = written.locationId;
     const webhookId = written.senderId;
 
-    // Persist transport coordinates immediately so interrupted uploads can be
-    // resumed: without this, chunks already stored (e.g. on Discord) would be
-    // unrecoverable orphans until commitManifest. Re-uploads of the same blobId
-    // overwrite the record with the newest location.
     const transportData = {
       ownerUserId: auth.userId,
       storageKind,
       storagePath,
       ...(storageKind === "DISCORD" ? { discordMessageId, discordChannelId, webhookId } : {}),
-      ciphertextSizeBytes,
-      ciphertextHash,
+      sizeBytes,
+      contentHash,
     };
     const placementCoordinates = {
       status: "ACTIVE" as const,
@@ -345,8 +320,6 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
         create: { blobId: params.blobId, ...transportData },
         update: { ...transportData, healthStatus: null, healthCheckedAt: null },
       }),
-      // A re-upload may land on a different provider; stale PRIMARY placements
-      // of other providers must not survive it.
       db.blobPlacement.deleteMany({
         where: { blobId: params.blobId, poolRole: "PRIMARY", NOT: { provider: storageKind } },
       }),
@@ -368,8 +341,6 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
       }),
       ...(replicaKinds.length > 0
         ? [
-            // Re-upload changed the bytes — existing replica copies are stale
-            // and must be re-replicated.
             db.blobPlacement.updateMany({
               where: {
                 blobId: params.blobId,
@@ -393,10 +364,7 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
     ]);
 
     if (replicaKinds.length > 0) {
-      // Opportunistic write-through: copy to replica pools now, while the
-      // ciphertext is in memory. Never blocks the response; the durable
-      // PENDING rows are the fallback if this fails or the process dies.
-      void writeThroughReplication(params.blobId, ciphertext).catch((error) => {
+      void writeThroughReplication(params.blobId, content).catch((error) => {
         logBlobUploadEvent({
           type: "write_through_failed",
           requestId,
@@ -424,7 +392,7 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
       relayEgress: written.diagnostics?.relayEgress ?? null,
       limiterRemaining: written.diagnostics?.limiterRemaining ?? null,
       limiterInFlight: written.diagnostics?.limiterInFlight ?? null,
-      ciphertextSizeBytes: ciphertext.byteLength,
+      sizeBytes: content.byteLength,
       readBodyMs: Number(readBodyMs.toFixed(2)),
       hashMs: Number(hashMs.toFixed(2)),
       storeMs: Number(storeMs.toFixed(2)),
@@ -433,8 +401,8 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
 
     return Response.json({
       blobId: params.blobId,
-      ciphertextSizeBytes: ciphertextSizeBytes.toString(),
-      ciphertextHash,
+      sizeBytes: sizeBytes.toString(),
+      contentHash,
       storageKind,
       storagePath,
       discordMessageId: discordMessageId ?? undefined,

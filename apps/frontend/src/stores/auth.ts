@@ -1,21 +1,12 @@
-// DiscorDrive v4 — Auth store (Zustand)
-// token + user are persisted to localStorage.
-// ARK and domain keys remain memory-only.
+// ddrive v4 — Auth store (Zustand)
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Argon2ParamsDto } from "@ddv4/types/api";
 
-interface PersistedUser {
+export interface PersistedUser {
   id: string;
   email: string;
   username: string | null;
-  crypto: {
-    wrappedARKByPassword: string;
-    wrappedARKByRecovery: string;
-    argon2Params: Argon2ParamsDto;
-    lastPasswordChangeAt: string;
-  };
 }
 
 interface AuthState {
@@ -24,7 +15,7 @@ interface AuthState {
   ark: CryptoKey | null;
   filesKey: CryptoKey | null;
 
-  setAuth: (token: string, user: PersistedUser, ark: CryptoKey, filesKey: CryptoKey) => void;
+  setAuth: (token: string, user: PersistedUser, ark?: CryptoKey | null, filesKey?: CryptoKey | null) => void;
   setKeys: (ark: CryptoKey, filesKey: CryptoKey) => void;
   setUser: (user: PersistedUser) => void;
   logout: () => void;
@@ -38,7 +29,7 @@ export const useAuthStore = create<AuthState>()(
       ark: null,
       filesKey: null,
 
-      setAuth: (token, user, ark, filesKey) => set({ token, user, ark, filesKey }),
+      setAuth: (token, user, ark, filesKey) => set({ token, user, ark: ark ?? null, filesKey: filesKey ?? null }),
       setKeys: (ark, filesKey) => set({ ark, filesKey }),
       setUser: (user) => set({ user }),
       logout: () => set({ token: null, user: null, ark: null, filesKey: null }),

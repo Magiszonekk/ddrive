@@ -1,33 +1,18 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { gqlRequest } from "../lib/graphql.js";
-import { loginCryptoFromKey, deriveLoginMaterial, toBase64 } from "../lib/crypto.js";
 import { useAuthStore } from "../stores/auth.js";
 import { AuthCard, authInputClass, authLabelClass, authPrimaryButtonClass } from "../components/layout/AuthCard.js";
-import type { LoginResponse, LoginChallengeDto } from "@ddv4/types/api";
-
-const GET_LOGIN_CHALLENGE = `
-  query GetLoginChallenge($emailOrUsername: String!) {
-    getLoginChallenge(emailOrUsername: $emailOrUsername) {
-      argon2Params { memoryKB iterations parallelism saltB64 }
-    }
-  }
-`;
+import type { LoginResponse } from "@ddv4/types/api";
 
 const LOGIN_MUTATION = `
-  mutation Login($emailOrUsername: String!, $serverAuthProof: String!) {
-    login(emailOrUsername: $emailOrUsername, serverAuthProof: $serverAuthProof) {
+  mutation Login($emailOrUsername: String!, $password: String!) {
+    login(emailOrUsername: $emailOrUsername, password: $password) {
       token
       user {
         id
         email
         username
-        crypto {
-          wrappedARKByPassword
-          wrappedARKByRecovery
-          argon2Params { memoryKB iterations parallelism saltB64 }
-          lastPasswordChangeAt
-        }
       }
     }
   }
@@ -47,35 +32,12 @@ export function Login() {
     setLoading(true);
 
     try {
-      const trimmedIdentifier = identifier.trim();
-      const trimmedPassword = password.trim();
-
-      // Step 1: fetch Argon2 params for this account (no secrets disclosed)
-      const { getLoginChallenge } = await gqlRequest<{ getLoginChallenge: LoginChallengeDto | null }>(
-        GET_LOGIN_CHALLENGE,
-        { emailOrUsername: trimmedIdentifier },
-      );
-      if (!getLoginChallenge) throw new Error("Account not found");
-
-      // Step 2: single Argon2 run — derives ARK-wrapping key AND server auth proof
-      const { arkWrapKey, serverAuthProof } = await deriveLoginMaterial(
-        trimmedPassword,
-        getLoginChallenge.argon2Params,
-      );
-
-      // Step 3: prove knowledge of password to server
       const { login } = await gqlRequest<{ login: LoginResponse }>(LOGIN_MUTATION, {
-        emailOrUsername: trimmedIdentifier,
-        serverAuthProof: toBase64(serverAuthProof),
+        emailOrUsername: identifier.trim(),
+        password: password.trim(),
       });
 
-      // Step 4: unwrap ARK with pre-computed key (no second Argon2)
-      const { ark, filesKey } = await loginCryptoFromKey(
-        arkWrapKey,
-        login.user.crypto.wrappedARKByPassword,
-      );
-
-      setAuth(login.token, login.user, ark, filesKey ?? ark);
+      setAuth(login.token, login.user);
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -86,7 +48,7 @@ export function Login() {
 
   return (
     <AuthCard
-      title="DiscorDrive"
+      title="ddrive"
       footer={
         <>
           Don&rsquo;t have an account?{" "}

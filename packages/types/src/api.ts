@@ -1,23 +1,9 @@
-// DiscorDrive v4 — API request/response types (secure files v2)
-
-export interface Argon2ParamsDto {
-  memoryKB: number;
-  iterations: number;
-  parallelism: number;
-  saltB64: string;
-}
+// ddrive v4 — API request/response types
 
 export interface RegisterRequest {
   email: string;
   username: string;
-  wrappedARKByPassword: string;
-  wrappedARKByRecovery: string;
-  argon2Params: Argon2ParamsDto;
-  serverAuthProof: string; // base64 — HKDF("ddv4-server-auth-v1") from Argon2 output
-}
-
-export interface LoginChallengeDto {
-  argon2Params: Argon2ParamsDto;
+  password: string;
 }
 
 export interface LoginResponse {
@@ -26,25 +12,15 @@ export interface LoginResponse {
     id: string;
     email: string;
     username: string | null;
-    crypto: {
-      wrappedARKByPassword: string;
-      wrappedARKByRecovery: string;
-      argon2Params: Argon2ParamsDto;
-      lastPasswordChangeAt: string;
-    };
   };
-  /** Present only for device-session logins (deviceName provided) */
   refreshToken?: string;
 }
 
-export interface InitSecureUploadRequest {
+export interface InitUploadRequest {
   parentFolderId?: string;
-  encryptedName?: string;
-  encryptedMimeType?: string;
-  wrappedFEK: string;
-  wrappedFEKPreview?: string;
-  dedupeTokenB64?: string;
-  totalCiphertextBytes: string;
+  name?: string;
+  mimeType?: string;
+  totalBytes: string;
   chunkCount: number;
 }
 
@@ -57,8 +33,8 @@ export interface UploadedBlobTransportInput {
   blobId: string;
   storageKind: "LOCAL" | "DISCORD" | "TELEGRAM";
   storagePath: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
   discordMessageId?: string;
   discordChannelId?: string;
   webhookId?: string;
@@ -67,7 +43,7 @@ export interface UploadedBlobTransportInput {
 export interface CommitManifestRequest {
   fileId: string;
   manifestBlobId: string;
-  totalCiphertextBytes: string;
+  totalBytes: string;
   chunkCount: number;
   blobs: UploadedBlobTransportInput[];
 }
@@ -78,13 +54,7 @@ export interface FinalizeUploadResponse {
 
 export interface CreateFileShareRequest {
   fileId: string;
-  capabilityToken: string;
-  wrappedAKShare: string;
-  wrappedFEK?: string;
-  /** Wrap(AK_share, FEK_preview) — lets recipients decrypt the low-res preview */
-  wrappedFEKPreview?: string;
   allowContent: boolean;
-  allowMetadata: boolean;
   allowPreview: boolean;
   expiresAt?: string;
   maxViews?: number;
@@ -92,20 +62,14 @@ export interface CreateFileShareRequest {
 
 export interface ShareAccessResponse {
   shareId: string;
-  wrappedAKShare: string;
-  wrappedObjectKeys: Array<{
-    fileId: string;
-    primaryManifestBlobId?: string;
-    /** Only present when allowPreview */
-    previewBlobId?: string;
-    /** Only present when allowMetadata */
-    encryptedName?: string;
-    encryptedMimeType?: string;
-    wrappedFEK?: string;
-    wrappedFEKPreview?: string;
-  }>;
+  fileId: string;
+  name: string | null;
+  mimeType: string | null;
+  primaryManifestBlobId: string | null;
+  previewBlobId: string | null;
+  thumbnailBlobId: string | null;
+  posterBlobId: string | null;
   allowContent: boolean;
-  allowMetadata: boolean;
   allowPreview: boolean;
 }
 
@@ -119,8 +83,8 @@ export interface BlobTransportMetadataDto {
   discordMessageId?: string;
   discordChannelId?: string;
   webhookId?: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
   healthStatus?: "healthy" | "missing" | "modified";
   healthCheckedAt?: string;
   createdAt: string;
@@ -133,6 +97,6 @@ export interface BlobFetchAuthorizationResponse {
   discordMessageId?: string;
   discordChannelId?: string;
   webhookId?: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
 }

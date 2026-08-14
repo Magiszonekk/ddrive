@@ -1,49 +1,38 @@
-// DiscorDrive v4 — Share resolvers (secure files v2)
+// ddrive v4 — Share resolvers (hashed-token model)
 
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { db } from "@ddv4/database";
 import type { CreateFileShareRequest, ShareAccessResponse } from "@ddv4/types/api";
-import { constantTimeEqual } from "@ddv4/processing";
 
-function decodeToken(token: string): Uint8Array {
-  return Uint8Array.from(Buffer.from(token, "base64"));
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 export async function createShare(
   ownerUserId: string,
   input: CreateFileShareRequest,
-): Promise<{ shareId: string }> {
+): Promise<{ shareId: string; token: string }> {
   const file = await db.file.findFirst({
     where: { id: input.fileId, ownerUserId, deletedAt: null, status: "READY" },
   });
   if (!file) throw new Error("File not found or not ready");
 
+  const token = randomBytes(32).toString("base64url");
+
   const share = await db.share.create({
     data: {
       ownerUserId,
+      fileId: input.fileId,
       shareType: "FILE",
-      capabilityToken: Buffer.from(input.capabilityToken, "base64"),
+      tokenHash: hashToken(token),
       allowContent: input.allowContent,
-      allowMetadata: input.allowMetadata ?? false,
       allowPreview: input.allowPreview ?? false,
       expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
       maxViews: input.maxViews ?? null,
-      grantedAccess: {
-        create: {
-          accessType: "PUBLIC_LINK",
-          wrappedAKShare: Buffer.from(input.wrappedAKShare, "base64"),
-        },
-      },
-      wrappedObjectKeys: {
-        create: {
-          fileId: input.fileId,
-          wrappedFEK: input.wrappedFEK ? Buffer.from(input.wrappedFEK, "base64") : null,
-          wrappedFEKPreview: input.wrappedFEKPreview ? Buffer.from(input.wrappedFEKPreview, "base64") : null,
-        },
-      },
     },
   });
 
-  return { shareId: share.shareId };
+  return { shareId: share.shareId, token };
 }
 
 export async function revokeShare(ownerUserId: string, shareId: string): Promise<boolean> {
@@ -59,19 +48,18 @@ export async function revokeShare(ownerUserId: string, shareId: string): Promise
 
 export async function getShares(ownerUserId: string, fileId: string) {
   return db.share.findMany({
-    where: { ownerUserId, wrappedObjectKeys: { some: { fileId } } },
+    where: { ownerUserId, fileId },
     orderBy: { createdAt: "desc" },
-    include: { wrappedObjectKeys: true, grantedAccess: true },
   });
 }
 
 export async function accessShare(
   shareId: string,
-  presentedCapabilityToken: string,
+  presentedToken: string,
 ): Promise<ShareAccessResponse | null> {
   const share = await db.share.findUnique({
     where: { shareId },
-    include: { wrappedObjectKeys: { include: { file: true } }, grantedAccess: true },
+    include: { file: true },
   });
 
   if (!share) return null;
@@ -79,37 +67,27 @@ export async function accessShare(
   if (share.expiresAt && share.expiresAt < new Date()) return null;
   if (share.maxViews !== null && share.maxViews !== undefined && share.viewCount >= share.maxViews) return null;
 
-  const matches = await constantTimeEqual(
-    new Uint8Array(share.capabilityToken),
-    decodeToken(presentedCapabilityToken),
-  );
-  if (!matches) return null;
+  const presented = Buffer.from(hashToken(presentedToken), "hex");
+  const stored = Buffer.from(share.tokenHash, "hex");
+  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) {
+    return null;
+  }
 
   await db.share.update({
     where: { shareId },
     data: { viewCount: { increment: 1 } },
   });
 
-  const grantedAccess = share.grantedAccess[0];
-  if (!grantedAccess) return null;
-
   return {
     shareId: share.shareId,
-    wrappedAKShare: Buffer.from(grantedAccess.wrappedAKShare).toString("base64"),
-    wrappedObjectKeys: share.wrappedObjectKeys.map((item) => ({
-      fileId: item.fileId,
-      primaryManifestBlobId: item.file.primaryManifestBlobId ?? undefined,
-      // Permission-gated fields: the server only releases what the owner allowed
-      previewBlobId: share.allowPreview ? item.file.previewBlobId ?? undefined : undefined,
-      encryptedName: share.allowMetadata ? item.file.encryptedName ?? undefined : undefined,
-      encryptedMimeType: share.allowMetadata ? item.file.encryptedMimeType ?? undefined : undefined,
-      wrappedFEK: item.wrappedFEK ? Buffer.from(item.wrappedFEK).toString("base64") : undefined,
-      wrappedFEKPreview: share.allowPreview && item.wrappedFEKPreview
-        ? Buffer.from(item.wrappedFEKPreview).toString("base64")
-        : undefined,
-    })),
+    fileId: share.fileId,
+    name: share.file.name,
+    mimeType: share.file.mimeType,
+    primaryManifestBlobId: share.file.primaryManifestBlobId,
+    previewBlobId: share.allowPreview ? share.file.previewBlobId : null,
+    thumbnailBlobId: share.allowPreview ? share.file.thumbnailBlobId : null,
+    posterBlobId: share.allowPreview ? share.file.posterBlobId : null,
     allowContent: share.allowContent,
-    allowMetadata: share.allowMetadata,
     allowPreview: share.allowPreview,
   };
 }

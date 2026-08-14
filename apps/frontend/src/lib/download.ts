@@ -51,7 +51,7 @@ export async function downloadFile(options: DownloadOptions): Promise<DownloadRe
 
   try {
     const rootFek = await unwrapRootFek(filesKey, options.wrappedFEK);
-    downloadStore.updateDownload(options.fileId, { status: DownloadStatus.DECRYPTING });
+    downloadStore.updateDownload(options.fileId, { status: DownloadStatus.DOWNLOADING });
 
     const manifestDescriptor = await fetchBlobDescriptor(options.manifestBlobId);
     const manifestBody = await fetchBlobBody(manifestDescriptor.blobId, controller.signal);

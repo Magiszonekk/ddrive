@@ -13,23 +13,19 @@ const { verifySessionToken, verifyToken, invalidateSessionCache } = await import
 
 const email = "device-sessions@example.com";
 const username = "device_sessions_user";
-const serverAuthProof = Buffer.from("device-session-proof").toString("base64");
+const serverAuthProof = "device-session-proof-password";
 
 async function resetFixtures() {
   const existing = await db.user.findUnique({ where: { email } });
   if (existing) {
     await db.deviceSession.deleteMany({ where: { userId: existing.id } });
-    await db.userCrypto.deleteMany({ where: { userId: existing.id } });
     await db.user.delete({ where: { id: existing.id } });
   }
 
   await register({
     email,
     username,
-    wrappedARKByPassword: Buffer.from("wrapped-ark").toString("base64"),
-    wrappedARKByRecovery: Buffer.from("wrapped-ark-recovery").toString("base64"),
-    argon2Params: { memoryKB: 19456, iterations: 2, parallelism: 1, saltB64: "c2FsdA==" },
-    serverAuthProof,
+    password: serverAuthProof,
   });
 }
 

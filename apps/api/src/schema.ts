@@ -1,4 +1,4 @@
-// DiscorDrive v4 — GraphQL Schema (secure files v2)
+// ddrive v4 — GraphQL Schema
 
 import { createSchema } from "graphql-yoga";
 import { resolveRequestAuth, isBackendOnly, type ResolvedAuth } from "./middleware/auth.js";
@@ -23,13 +23,6 @@ function requireFullMode(): void {
   if (isBackendOnly()) throw new Error("Not available in backend-only mode");
 }
 
-/**
- * Restricts an operation to an interactive browser session.
- *
- * Account-management operations stay off-limits to API keys: a key that could
- * change the password or read wrappedARKByPassword would turn a leaked script
- * credential into full account takeover. Keys get files and folders, nothing more.
- */
 function requireInteractive(ctx: Context): ResolvedAuth {
   const auth = requireAuth(ctx);
   if (auth.via !== "jwt") {
@@ -63,25 +56,10 @@ export function buildSchema() {
       scalar DateTime
       scalar Float
 
-      type Argon2Params {
-        memoryKB: Int!
-        iterations: Int!
-        parallelism: Int!
-        saltB64: String!
-      }
-
-      type UserCrypto {
-        wrappedARKByPassword: String!
-        wrappedARKByRecovery: String!
-        argon2Params: Argon2Params!
-        lastPasswordChangeAt: DateTime!
-      }
-
       type User {
         id: ID!
         email: String!
         username: String
-        crypto: UserCrypto!
       }
 
       type AuthResponse {
@@ -111,28 +89,17 @@ export function buildSchema() {
         expiresAt: DateTime
       }
 
-      "The calling key's own ARK, wrapped under a key only the caller can derive."
-      type ApiKeyMaterial {
-        wrappedARKByKey: String!
-        wrappedARKIv: String!
-      }
-
-      type LoginChallenge {
-        argon2Params: Argon2Params!
-      }
-
       type File {
         id: ID!
         parentFolderId: ID
-        encryptedName: String
-        encryptedMimeType: String
+        name: String
+        mimeType: String
         primaryManifestBlobId: String
         previewBlobId: String
-        wrappedFEK: String!
-        wrappedFEKPreview: String
-        dedupeTokenB64: String
+        thumbnailBlobId: String
+        posterBlobId: String
         status: String!
-        totalCiphertextBytes: String!
+        totalBytes: String!
         chunkCount: Int!
         createdAt: DateTime!
         updatedAt: DateTime!
@@ -142,44 +109,42 @@ export function buildSchema() {
       type Folder {
         id: ID!
         parentFolderId: ID
-        encryptedBody: String!
-        wrappedFolderKey: String!
+        name: String!
         itemCount: Int!
         totalSizeBytes: String!
         createdAt: DateTime!
         updatedAt: DateTime!
       }
 
-      type ShareObjectKey {
-        fileId: ID!
-        primaryManifestBlobId: String
-        previewBlobId: String
-        encryptedName: String
-        encryptedMimeType: String
-        wrappedFEK: String
-        wrappedFEKPreview: String
-      }
-
       type ShareAccess {
         shareId: ID!
-        wrappedAKShare: String!
-        wrappedObjectKeys: [ShareObjectKey!]!
+        fileId: ID!
+        name: String
+        mimeType: String
+        primaryManifestBlobId: String
+        previewBlobId: String
+        thumbnailBlobId: String
+        posterBlobId: String
         allowContent: Boolean!
-        allowMetadata: Boolean!
         allowPreview: Boolean!
       }
 
-      type SecureShare {
+      type ShareInfo {
         shareId: ID!
         shareType: String!
+        fileId: ID!
         allowContent: Boolean!
-        allowMetadata: Boolean!
         allowPreview: Boolean!
         status: String!
         expiresAt: DateTime
         maxViews: Int
         viewCount: Int!
         createdAt: DateTime!
+      }
+
+      type ShareCreateResult {
+        shareId: ID!
+        token: String!
       }
 
       type InitUploadResult {
@@ -203,8 +168,8 @@ export function buildSchema() {
         blobId: String!
         storageKind: String!
         storagePath: String!
-        ciphertextSizeBytes: String!
-        ciphertextHash: String
+        sizeBytes: String!
+        contentHash: String
         discordMessageId: String
         discordChannelId: String
         webhookId: String
@@ -221,7 +186,7 @@ export function buildSchema() {
         messageId: String!
         webhookId: String!
         size: Int!
-        encryptedHash: String
+        contentHash: String
         healthStatus: String
         healthCheckedAt: DateTime
       }
@@ -263,29 +228,19 @@ export function buildSchema() {
         placements: [ReplicationPlacementGroup!]!
       }
 
-      input Argon2ParamsInput {
-        memoryKB: Int!
-        iterations: Int!
-        parallelism: Int!
-        saltB64: String!
-      }
-
       type Query {
         me: User
-        getLoginChallenge(emailOrUsername: String!): LoginChallenge
         files(parentFolderId: ID): [File!]!
         folders(parentFolderId: ID): [Folder!]!
         folderPath(folderId: ID!): [Folder!]!
         file(fileId: ID!): File
-        fileByDedupeToken(dedupeTokenB64: String!): File
         trashedFiles: [File!]!
         sessions: [DeviceSession!]!
         apiKeys: [ApiKey!]!
-        apiKeyMaterial: ApiKeyMaterial!
         uploadStatus(fileId: ID!): UploadStatus!
-        shares(fileId: ID!): [SecureShare!]!
+        shares(fileId: ID!): [ShareInfo!]!
         storageUsage: StorageUsage!
-        accessShare(shareId: ID!, capabilityToken: String!): ShareAccess
+        accessShare(shareId: ID!, token: String!): ShareAccess
         filesForHealthCheck(samplePercent: Float, fileId: ID): [HealthCheckFile!]!
         replicationStatus: ReplicationStatus!
       }
@@ -294,13 +249,10 @@ export function buildSchema() {
         register(
           email: String!
           username: String!
-          wrappedARKByPassword: String!
-          wrappedARKByRecovery: String!
-          argon2Params: Argon2ParamsInput!
-          serverAuthProof: String!
+          password: String!
         ): AuthResponse!
 
-        login(emailOrUsername: String!, serverAuthProof: String!, deviceName: String): AuthResponse!
+        login(emailOrUsername: String!, password: String!, deviceName: String): AuthResponse!
 
         refreshSession(refreshToken: String!): RefreshSessionResult!
         revokeSession(sessionId: ID!): Boolean!
@@ -308,36 +260,29 @@ export function buildSchema() {
         createApiKey(
           name: String!
           authPart: String!
-          wrappedARKByKey: String!
-          wrappedARKIv: String!
           expiresAt: String
         ): ApiKey!
         revokeApiKey(apiKeyId: ID!): Boolean!
 
         changePassword(
-          currentServerAuthProof: String!
-          wrappedARKByPassword: String!
-          argon2Params: Argon2ParamsInput!
-          serverAuthProof: String!
+          currentPassword: String!
+          newPassword: String!
         ): Boolean!
 
         initUpload(
           parentFolderId: ID
-          encryptedName: String
-          encryptedMimeType: String
-          wrappedFEK: String!
-          wrappedFEKPreview: String
-          dedupeTokenB64: String
-          totalCiphertextBytes: String!
+          name: String
+          mimeType: String
+          totalBytes: String!
           chunkCount: Int!
         ): InitUploadResult!
 
-        setFilePreview(fileId: ID!, previewBlobId: String!, wrappedFEKPreview: String!): Boolean!
+        setFilePreview(fileId: ID!, previewBlobId: String!): Boolean!
 
         commitManifest(
           fileId: ID!
           manifestBlobId: String!
-          totalCiphertextBytes: String!
+          totalBytes: String!
           chunkCount: Int!
           blobs: [UploadedBlobTransportInput!]!
         ): CommitManifestResult!
@@ -348,23 +293,18 @@ export function buildSchema() {
         purgeFile(fileId: ID!): Boolean!
         emptyTrash: Int!
 
-        createFolder(encryptedBodyB64: String!, wrappedFolderKeyB64: String!, parentFolderId: ID): Folder!
-        renameFolder(folderId: ID!, encryptedBodyB64: String!): Boolean!
+        createFolder(name: String!, parentFolderId: ID): Folder!
+        renameFolder(folderId: ID!, name: String!): Boolean!
         moveFolder(folderId: ID!, parentFolderId: ID): Boolean!
         deleteFolder(folderId: ID!): Boolean!
 
         createShare(
           fileId: ID!
-          capabilityToken: String!
-          wrappedAKShare: String!
-          wrappedFEK: String
-          wrappedFEKPreview: String
           allowContent: Boolean!
-          allowMetadata: Boolean
           allowPreview: Boolean
           expiresAt: String
           maxViews: Int
-        ): SecureShare!
+        ): ShareCreateResult!
 
         revokeShare(shareId: ID!): Boolean!
         updateChunkHealthBatch(updates: [ChunkHealthUpdateInput!]!): Boolean!
@@ -377,44 +317,22 @@ export function buildSchema() {
         parseValue: (value: unknown) => new Date(value as string),
       },
       File: {
-        totalCiphertextBytes: (parent: { totalCiphertextBytes: bigint | string }) => parent.totalCiphertextBytes.toString(),
-        wrappedFEK: (parent: { wrappedFEK: Uint8Array | Buffer }) => Buffer.from(parent.wrappedFEK).toString("base64"),
-        wrappedFEKPreview: (parent: { wrappedFEKPreview: Uint8Array | Buffer | null }) =>
-          parent.wrappedFEKPreview ? Buffer.from(parent.wrappedFEKPreview).toString("base64") : null,
+        totalBytes: (parent: { totalBytes: bigint | string }) => parent.totalBytes.toString(),
       },
       Folder: {
-        encryptedBody: (parent: { encryptedBody: Uint8Array | Buffer }) => Buffer.from(parent.encryptedBody).toString("base64"),
-        wrappedFolderKey: (parent: { wrappedFolderKey: Uint8Array | Buffer }) => Buffer.from(parent.wrappedFolderKey).toString("base64"),
         totalSizeBytes: (parent: { totalSizeBytes?: string }) => parent.totalSizeBytes ?? "0",
       },
       Query: {
-        getLoginChallenge: async (_parent: unknown, args: { emailOrUsername: string }, ctx: Context) => {
-          requireFullMode();
-          enforceRateLimit(ctx.ip, "auth");
-          return authResolvers.getLoginChallenge(args.emailOrUsername);
-        },
         me: async (_parent: unknown, _args: unknown, ctx: Context) => {
           requireFullMode();
-          // Returns wrappedARKByPassword — an offline brute-force target. JWT only.
           const auth = requireInteractive(ctx);
           const { db } = await import("@ddv4/database");
-          const user = await db.user.findUnique({ where: { id: auth.userId }, include: { crypto: true } });
-          if (!user || !user.crypto) return null;
+          const user = await db.user.findUnique({ where: { id: auth.userId } });
+          if (!user) return null;
           return {
             id: user.id,
             email: user.email,
             username: user.username,
-            crypto: {
-              wrappedARKByPassword: Buffer.from(user.crypto.wrappedARKByPassword).toString("base64"),
-              wrappedARKByRecovery: Buffer.from(user.crypto.wrappedARKByRecovery).toString("base64"),
-              argon2Params: {
-                memoryKB: user.crypto.argon2MemoryKB,
-                iterations: user.crypto.argon2Iterations,
-                parallelism: user.crypto.argon2Parallelism,
-                saltB64: user.crypto.argon2SaltB64,
-              },
-              lastPasswordChangeAt: user.crypto.lastPasswordChangeAt,
-            },
           };
         },
         files: async (_parent: unknown, args: { parentFolderId?: string }, ctx: Context) => {
@@ -437,10 +355,6 @@ export function buildSchema() {
           const auth = requireAuth(ctx);
           return fileResolvers.getUploadStatus(auth.userId, args.fileId);
         },
-        fileByDedupeToken: async (_parent: unknown, args: { dedupeTokenB64: string }, ctx: Context) => {
-          const auth = requireAuth(ctx);
-          return fileResolvers.getFileByDedupeToken(auth.userId, args.dedupeTokenB64);
-        },
         trashedFiles: async (_parent: unknown, _args: unknown, ctx: Context) => {
           const auth = requireAuth(ctx);
           return fileResolvers.getTrashedFiles(auth.userId);
@@ -454,15 +368,6 @@ export function buildSchema() {
           requireFullMode();
           const auth = requireInteractive(ctx);
           return authResolvers.listApiKeys(auth.userId);
-        },
-        apiKeyMaterial: async (_parent: unknown, _args: unknown, ctx: Context) => {
-          const auth = requireAuth(ctx);
-          // Only a key can ask for its own material, and it identifies itself by
-          // the header it already presented rather than by any argument.
-          if (auth.via !== "apikey" || !auth.apiKeyAuthPart) {
-            throw new Error("Only available when authenticating with an API key");
-          }
-          return authResolvers.getApiKeyMaterial(auth.userId, auth.apiKeyAuthPart);
         },
         shares: async (_parent: unknown, args: { fileId: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
@@ -480,28 +385,25 @@ export function buildSchema() {
           const auth = requireAuth(ctx);
           return fileResolvers.getReplicationStatus(auth.userId);
         },
-        accessShare: async (_parent: unknown, args: { shareId: string; capabilityToken: string }, ctx: Context) => {
+        accessShare: async (_parent: unknown, args: { shareId: string; token: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
-          return sharingResolvers.accessShare(args.shareId, args.capabilityToken);
+          return sharingResolvers.accessShare(args.shareId, args.token);
         },
       },
       Mutation: {
         register: async (_parent: unknown, args: {
           email: string;
           username: string;
-          wrappedARKByPassword: string;
-          wrappedARKByRecovery: string;
-          argon2Params: { memoryKB: number; iterations: number; parallelism: number; saltB64: string };
-          serverAuthProof: string;
+          password: string;
         }, ctx: Context) => {
           requireFullMode();
           enforceRateLimit(ctx.ip, "auth");
           return authResolvers.register(args);
         },
-        login: async (_parent: unknown, args: { emailOrUsername: string; serverAuthProof: string; deviceName?: string }, ctx: Context) => {
+        login: async (_parent: unknown, args: { emailOrUsername: string; password: string; deviceName?: string }, ctx: Context) => {
           requireFullMode();
           enforceRateLimit(ctx.ip, "auth");
-          return authResolvers.login(args.emailOrUsername, args.serverAuthProof, args.deviceName ?? null);
+          return authResolvers.login(args.emailOrUsername, args.password, args.deviceName ?? null);
         },
         refreshSession: async (_parent: unknown, args: { refreshToken: string }, ctx: Context) => {
           requireFullMode();
@@ -516,13 +418,9 @@ export function buildSchema() {
         createApiKey: async (_parent: unknown, args: {
           name: string;
           authPart: string;
-          wrappedARKByKey: string;
-          wrappedARKIv: string;
           expiresAt?: string;
         }, ctx: Context) => {
           requireFullMode();
-          // Minting a credential requires a browser session — an API key must not
-          // be able to mint successors and outlive its own revocation.
           const auth = requireInteractive(ctx);
           return authResolvers.createApiKey(auth.userId, args);
         },
@@ -532,24 +430,19 @@ export function buildSchema() {
           return authResolvers.revokeApiKey(auth.userId, args.apiKeyId);
         },
         changePassword: async (_parent: unknown, args: {
-          currentServerAuthProof: string;
-          wrappedARKByPassword: string;
-          argon2Params: { memoryKB: number; iterations: number; parallelism: number; saltB64: string };
-          serverAuthProof: string;
+          currentPassword: string;
+          newPassword: string;
         }, ctx: Context) => {
           requireFullMode();
           enforceRateLimit(ctx.ip, "auth");
           const auth = requireInteractive(ctx);
-          return authResolvers.changePassword(auth.userId, args.currentServerAuthProof, args.wrappedARKByPassword, args.argon2Params, args.serverAuthProof);
+          return authResolvers.changePassword(auth.userId, args.currentPassword, args.newPassword);
         },
         initUpload: async (_parent: unknown, args: {
           parentFolderId?: string;
-          encryptedName?: string;
-          encryptedMimeType?: string;
-          wrappedFEK: string;
-          wrappedFEKPreview?: string;
-          dedupeTokenB64?: string;
-          totalCiphertextBytes: string;
+          name?: string;
+          mimeType?: string;
+          totalBytes: string;
           chunkCount: number;
         }, ctx: Context) => {
           const auth = requireAuth(ctx);
@@ -558,21 +451,21 @@ export function buildSchema() {
         commitManifest: async (_parent: unknown, args: {
           fileId: string;
           manifestBlobId: string;
-          totalCiphertextBytes: string;
+          totalBytes: string;
           chunkCount: number;
           blobs: Array<{
             blobId: string;
             storageKind: "LOCAL" | "DISCORD" | "TELEGRAM";
             storagePath: string;
-            ciphertextSizeBytes: string;
-            ciphertextHash?: string;
+            sizeBytes: string;
+            contentHash?: string;
             discordMessageId?: string;
             discordChannelId?: string;
             webhookId?: string;
           }>;
         }, ctx: Context) => {
           const auth = requireAuth(ctx);
-          return fileResolvers.commitManifest(auth.userId, args.fileId, args.manifestBlobId, args.totalCiphertextBytes, args.chunkCount, args.blobs);
+          return fileResolvers.commitManifest(auth.userId, args.fileId, args.manifestBlobId, args.totalBytes, args.chunkCount, args.blobs);
         },
         deleteFile: async (_parent: unknown, args: { fileId: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
@@ -582,9 +475,9 @@ export function buildSchema() {
           const auth = requireAuth(ctx);
           return fileResolvers.moveFile(auth.userId, args.fileId, args.parentFolderId ?? null);
         },
-        setFilePreview: async (_parent: unknown, args: { fileId: string; previewBlobId: string; wrappedFEKPreview: string }, ctx: Context) => {
+        setFilePreview: async (_parent: unknown, args: { fileId: string; previewBlobId: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
-          return fileResolvers.setFilePreview(auth.userId, args.fileId, args.previewBlobId, args.wrappedFEKPreview);
+          return fileResolvers.setFilePreview(auth.userId, args.fileId, args.previewBlobId);
         },
         restoreFile: async (_parent: unknown, args: { fileId: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
@@ -598,13 +491,13 @@ export function buildSchema() {
           const auth = requireAuth(ctx);
           return fileResolvers.emptyTrash(auth.userId);
         },
-        createFolder: async (_parent: unknown, args: { encryptedBodyB64: string; wrappedFolderKeyB64: string; parentFolderId?: string }, ctx: Context) => {
+        createFolder: async (_parent: unknown, args: { name: string; parentFolderId?: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
-          return folderResolvers.createFolder(auth.userId, args.encryptedBodyB64, args.wrappedFolderKeyB64, args.parentFolderId ?? null);
+          return folderResolvers.createFolder(auth.userId, args.name, args.parentFolderId ?? null);
         },
-        renameFolder: async (_parent: unknown, args: { folderId: string; encryptedBodyB64: string }, ctx: Context) => {
+        renameFolder: async (_parent: unknown, args: { folderId: string; name: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
-          return folderResolvers.renameFolder(auth.userId, args.folderId, args.encryptedBodyB64);
+          return folderResolvers.renameFolder(auth.userId, args.folderId, args.name);
         },
         moveFolder: async (_parent: unknown, args: { folderId: string; parentFolderId?: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
@@ -616,24 +509,16 @@ export function buildSchema() {
         },
         createShare: async (_parent: unknown, args: {
           fileId: string;
-          capabilityToken: string;
-          wrappedAKShare: string;
-          wrappedFEK?: string;
-          wrappedFEKPreview?: string;
           allowContent: boolean;
-          allowMetadata?: boolean;
           allowPreview?: boolean;
           expiresAt?: string;
           maxViews?: number;
         }, ctx: Context) => {
           const auth = requireAuth(ctx);
-          const result = await sharingResolvers.createShare(auth.userId, {
+          return sharingResolvers.createShare(auth.userId, {
             ...args,
-            allowMetadata: args.allowMetadata ?? false,
             allowPreview: args.allowPreview ?? false,
           });
-          const shares = await sharingResolvers.getShares(auth.userId, args.fileId);
-          return shares.find((share) => share.shareId === result.shareId)!;
         },
         updateChunkHealthBatch: async (_parent: unknown, args: { updates: Array<{ chunkId: string; status: string }> }, ctx: Context) => {
           const auth = requireAuth(ctx);

@@ -45,7 +45,7 @@ type WorkRow = {
   blob: {
     blobId: string;
     ownerUserId: string;
-    ciphertextHash: string | null;
+    contentHash: string | null;
     storageKind: string;
     storagePath: string;
     discordMessageId: string | null;
@@ -104,9 +104,9 @@ export async function processPlacement(row: WorkRow, bytes?: Uint8Array): Promis
     const ciphertext = bytes ?? (await readSourceBytes(row));
 
     // Guard against copying corrupted bytes: the stored hash is the contract
-    if (row.blob.ciphertextHash) {
+    if (row.blob.contentHash) {
       const actual = createHash("sha256").update(ciphertext).digest("hex");
-      if (actual !== row.blob.ciphertextHash) {
+      if (actual !== row.blob.contentHash) {
         throw new Error(`source ciphertext hash mismatch for ${row.blobId}`);
       }
     }
