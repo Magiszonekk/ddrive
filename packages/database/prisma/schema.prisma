@@ -1,0 +1,319 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String      @id @default(cuid())
+  email       String      @unique
+  username    String?     @unique
+  createdAt   DateTime    @default(now())
+  crypto      UserCrypto?
+  domainKeys  DomainKey[]
+  files       File[]
+  folders     Folder[]
+  blobs       BlobTransport[]
+  shares      Share[]
+  sessions    DeviceSession[]
+  apiKeys     ApiKey[]
+  encryptedStates EncryptedState[]
+}
+
+// Generic client-encrypted key-value store with optimistic locking.
+// Used by plugins (e.g. gallery: device sync manifests, thumbnail-pack index,
+// search index pointers). The server never sees plaintext values.
+model EncryptedState {
+  id        String   @id @default(cuid())
+  userId    String
+  domain    String
+  key       String
+  value     Bytes
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain, key])
+  @@index([userId, domain])
+}
+
+model DeviceSession {
+  id               String    @id @default(cuid())
+  userId           String
+  deviceName       String?
+  refreshTokenHash String    @unique
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+}
+
+// Long-lived credential for scripts and integrations, scoped to one user.
+//
+// The secret shown to the operator is `ddv4_<authPart>_<cryptoPart>`, and the
+// two halves never meet on the server:
+//   authPart   — presented as X-API-Key; only its SHA-256 is stored here.
+//   cryptoPart — never transmitted. The browser wraps the account's ARK under a
+//                key derived from it, and only the wrapped result lands in
+//                wrappedARKByKey. Without cryptoPart that ciphertext is inert,
+//                so the server still cannot read the user's files.
+//
+// Revoking the row destroys the only copy of the wrapped ARK, which takes the
+// key's decryption ability with it — not just its ability to authenticate.
+model ApiKey {
+  id              String    @id @default(cuid())
+  userId          String
+  name            String
+  keyHash         String    @unique
+  prefix          String
+  wrappedARKByKey Bytes
+  wrappedARKIv    Bytes
+  createdAt       DateTime  @default(now())
+  lastUsedAt      DateTime?
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+}
+
+model UserCrypto {
+  userId                 String   @id
+  wrappedARKByPassword   Bytes
+  wrappedARKByRecovery   Bytes
+  argon2MemoryKB         Int
+  argon2Iterations       Int
+  argon2Parallelism      Int
+  argon2SaltB64          String
+  serverAuthProofHash    String?
+  createdAt              DateTime @default(now())
+  lastPasswordChangeAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model DomainKey {
+  id         String   @id @default(cuid())
+  userId     String
+  domain     DomainId
+  wrappedKey Bytes
+  keyVersion Int      @default(1)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, domain, keyVersion])
+  @@index([userId, domain])
+}
+
+model File {
+  id                    String      @id @default(cuid())
+  ownerUserId           String
+  parentFolderId        String?
+  encryptedName         String?
+  encryptedMimeType     String?
+  primaryManifestBlobId String?
+  previewBlobId         String?
+  wrappedFEK            Bytes
+  wrappedFEKPreview     Bytes?
+  dedupeTokenB64        String?
+  status                FileStatus  @default(UPLOADING)
+  totalCiphertextBytes  BigInt      @default(0)
+  chunkCount            Int         @default(0)
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+  deletedAt             DateTime?
+
+  owner        User                   @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  parentFolder Folder?                @relation(fields: [parentFolderId], references: [id], onDelete: SetNull)
+  shares       ShareWrappedObjectKey[]
+
+  @@index([ownerUserId, parentFolderId, status])
+  @@index([ownerUserId, deletedAt])
+  @@index([ownerUserId, dedupeTokenB64])
+}
+
+enum FileStatus {
+  UPLOADING
+  READY
+  FAILED
+}
+
+enum BlobStorageKind {
+  LOCAL
+  DISCORD
+  TELEGRAM
+}
+
+// Logical blob. Physical copies live in BlobPlacement (one row per copy);
+// the storageKind/storagePath/discord* columns below are a legacy mirror of
+// the PRIMARY placement, kept during the expand/contract migration so old
+// code (and un-backfilled rows) keep working. Placements are authoritative.
+model BlobTransport {
+  blobId               String           @id
+  ownerUserId          String
+  storageKind          BlobStorageKind
+  storagePath          String
+  discordMessageId     String?
+  discordChannelId     String?
+  webhookId            String?
+  ciphertextSizeBytes  BigInt
+  ciphertextHash       String?
+  healthStatus         BlobHealthStatus?
+  healthCheckedAt      DateTime?
+  createdAt            DateTime         @default(now())
+
+  owner      User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  placements BlobPlacement[]
+
+  @@index([ownerUserId, createdAt])
+}
+
+// One physical copy of a blob at one provider. PRIMARY placements serve
+// reads; REPLICA placements are asynchronous copies on dedicated sender
+// pools (separate webhooks/bots/accounts). PENDING rows form the
+// replication queue, DELETING rows the deletion queue.
+model BlobPlacement {
+  id              String          @id @default(cuid())
+  blobId          String
+  provider        BlobStorageKind
+  poolRole        PoolRole
+  status          PlacementStatus
+  storagePath     String
+  // discord message id / telegram message_id — needed for provider-side delete
+  messageId       String?
+  // discord channel id / telegram chat_id
+  locationId      String?
+  // webhook numeric id, "BOT_n", "TG_BOT_n", "R_..." — rate-limiter + config key
+  senderId        String?
+  attemptCount    Int             @default(0)
+  lastError       String?
+  // Exponential backoff gate for the replication worker; null = due now
+  nextAttemptAt   DateTime?
+  createdAt       DateTime        @default(now())
+  activatedAt     DateTime?
+  healthCheckedAt DateTime?
+
+  blob BlobTransport @relation(fields: [blobId], references: [blobId], onDelete: Cascade)
+
+  @@unique([blobId, provider, poolRole])
+  @@index([blobId, poolRole, status])
+  @@index([status, createdAt])
+}
+
+enum PoolRole {
+  PRIMARY
+  REPLICA
+}
+
+enum PlacementStatus {
+  PENDING
+  ACTIVE
+  MISSING
+  MODIFIED
+  DELETING
+}
+
+enum BlobHealthStatus {
+  HEALTHY
+  MISSING
+  MODIFIED
+}
+
+model Folder {
+  id               String    @id @default(cuid())
+  ownerUserId      String
+  parentFolderId   String?
+  encryptedBody    Bytes
+  wrappedFolderKey Bytes
+  itemCount        Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  owner  User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  parent Folder?  @relation("FolderTree", fields: [parentFolderId], references: [id], onDelete: SetNull)
+  childFolders Folder[] @relation("FolderTree")
+  files   File[]
+
+  @@index([ownerUserId, parentFolderId])
+}
+
+model Share {
+  shareId          String      @id @default(cuid())
+  ownerUserId      String
+  shareType        ShareType   @default(FILE)
+  capabilityToken  Bytes
+  allowContent     Boolean     @default(true)
+  allowMetadata    Boolean     @default(true)
+  allowPreview     Boolean     @default(false)
+  status           ShareStatus @default(ACTIVE)
+  expiresAt        DateTime?
+  maxViews         Int?
+  viewCount        Int         @default(0)
+  createdAt        DateTime    @default(now())
+  revokedAt        DateTime?
+
+  owner             User                   @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  grantedAccess     GrantedAccess[]
+  wrappedObjectKeys ShareWrappedObjectKey[]
+
+  @@index([ownerUserId, status])
+  @@index([expiresAt])
+}
+
+enum ShareType {
+  FILE
+}
+
+enum ShareStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model GrantedAccess {
+  accessId        String   @id @default(cuid())
+  shareId         String
+  accessType      AccessType @default(PUBLIC_LINK)
+  wrappedAKShare  Bytes
+  createdAt       DateTime @default(now())
+  revokedAt       DateTime?
+  expiresAt       DateTime?
+
+  share Share @relation(fields: [shareId], references: [shareId], onDelete: Cascade)
+
+  @@index([shareId, accessType])
+}
+
+enum AccessType {
+  PUBLIC_LINK
+}
+
+model ShareWrappedObjectKey {
+  id                String @id @default(cuid())
+  shareId           String
+  fileId            String
+  wrappedFEK        Bytes?
+  wrappedFEKPreview Bytes?
+
+  share Share @relation(fields: [shareId], references: [shareId], onDelete: Cascade)
+  file  File  @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([shareId, fileId])
+  @@index([fileId])
+}
+
+enum DomainId {
+  FILES
+  GALLERY
+}
