@@ -1,31 +1,26 @@
-// DiscorDrive v4 — Folder resolvers (secure files v2)
+// ddrive v4 — Folder resolvers
 
 import { db, Prisma } from "@ddv4/database";
 
-// Enriched folder type with computed stats
 interface FolderWithStats {
   id: string;
   ownerUserId: string;
   parentFolderId: string | null;
-  encryptedBody: Buffer;
-  wrappedFolderKey: Buffer;
+  name: string;
   itemCount: number;
   totalSizeBytes: string;
   createdAt: Date;
   updatedAt: Date;
 }
 
-// Computes itemCount (direct children) and totalSizeBytes (recursive sum) for
-// a list of folder IDs in two batched queries instead of N per-folder queries.
 async function enrichFolders(
   ownerUserId: string,
   folders: Awaited<ReturnType<typeof db.folder.findMany>>,
 ): Promise<FolderWithStats[]> {
   if (folders.length === 0) return [];
 
-  const ids = folders.map((f) => f.id);
+  const ids = folders.map((f: { id: string }) => f.id);
 
-  // --- Direct item counts (files + subfolders) ---
   const [fileCounts, subfolderCounts] = await Promise.all([
     db.file.groupBy({
       by: ["parentFolderId"],
@@ -39,10 +34,9 @@ async function enrichFolders(
     }),
   ]);
 
-  const fileCountMap = new Map(fileCounts.map((r) => [r.parentFolderId, r._count._all]));
-  const subfolderCountMap = new Map(subfolderCounts.map((r) => [r.parentFolderId, r._count._all]));
+  const fileCountMap = new Map(fileCounts.map((r: typeof fileCounts[number]) => [r.parentFolderId, r._count._all]));
+  const subfolderCountMap = new Map(subfolderCounts.map((r: typeof subfolderCounts[number]) => [r.parentFolderId, r._count._all]));
 
-  // --- Recursive total size via CTE (single query for all folders) ---
   const sizeRows = await db.$queryRaw<Array<{ root_id: string; total: bigint }>>`
     WITH RECURSIVE folder_tree AS (
       SELECT id, id AS root_id
@@ -56,7 +50,7 @@ async function enrichFolders(
       WHERE f."ownerUserId" = ${ownerUserId}
     )
     SELECT ft.root_id,
-           COALESCE(SUM(fi."totalCiphertextBytes"), 0)::bigint AS total
+           COALESCE(SUM(fi."totalBytes"), 0)::bigint AS total
     FROM folder_tree ft
     LEFT JOIN "File" fi
            ON fi."parentFolderId" = ft.id
@@ -66,21 +60,23 @@ async function enrichFolders(
     GROUP BY ft.root_id
   `;
 
-  const sizeMap = new Map(sizeRows.map((r) => [r.root_id, r.total.toString()]));
+  const sizeMap = new Map(sizeRows.map((r: { root_id: string; total: bigint }) => [r.root_id, r.total.toString()]));
 
-  return folders.map((f) => ({
-    ...f,
-    encryptedBody: Buffer.from(f.encryptedBody),
-    wrappedFolderKey: Buffer.from(f.wrappedFolderKey),
+  return folders.map((f: typeof folders[number]) => ({
+    id: f.id,
+    ownerUserId: f.ownerUserId,
+    parentFolderId: f.parentFolderId,
+    name: f.name,
     itemCount: (fileCountMap.get(f.id) ?? 0) + (subfolderCountMap.get(f.id) ?? 0),
     totalSizeBytes: sizeMap.get(f.id) ?? "0",
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
   }));
 }
 
 export async function createFolder(
   ownerUserId: string,
-  encryptedBodyB64: string,
-  wrappedFolderKeyB64: string,
+  name: string,
   parentFolderId: string | null,
 ) {
   if (parentFolderId) {
@@ -92,9 +88,7 @@ export async function createFolder(
     data: {
       ownerUserId,
       parentFolderId,
-      encryptedBody: Buffer.from(encryptedBodyB64, "base64"),
-      wrappedFolderKey: Buffer.from(wrappedFolderKeyB64, "base64"),
-      itemCount: 0,
+      name,
     },
   });
 
@@ -105,13 +99,13 @@ export async function createFolder(
 export async function renameFolder(
   ownerUserId: string,
   folderId: string,
-  encryptedBodyB64: string,
+  name: string,
 ): Promise<boolean> {
   const folder = await db.folder.findFirst({ where: { id: folderId, ownerUserId } });
   if (!folder) throw new Error("Folder not found");
   await db.folder.update({
     where: { id: folderId },
-    data: { encryptedBody: Buffer.from(encryptedBodyB64, "base64") },
+    data: { name },
   });
   return true;
 }
@@ -129,8 +123,6 @@ export async function moveFolder(
     const parent = await db.folder.findFirst({ where: { id: parentFolderId, ownerUserId } });
     if (!parent) throw new Error("Target folder not found");
 
-    // Reject moving a folder into its own descendant — would create a cycle
-    // (and hang the recursive size CTE in enrichFolders).
     let cursor: string | null = parent.parentFolderId;
     while (cursor) {
       if (cursor === folderId) throw new Error("Cannot move folder into its own subfolder");

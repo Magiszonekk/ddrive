@@ -88,7 +88,7 @@ export async function registerStream(file: StreamFileInfo): Promise<void> {
   const lastChunk = sortedChunks[sortedChunks.length - 1];
   const totalSize = lastChunk
     ? (sortedChunks.length - 1) * manifest.chunkSizeBytes +
-      Math.max(0, lastChunk.ciphertextSizeBytes - CRYPTO_OVERHEAD)
+      Math.max(0, lastChunk.sizeBytes - CRYPTO_OVERHEAD)
     : 0;
 
   await new Promise<void>((resolve, reject) => {

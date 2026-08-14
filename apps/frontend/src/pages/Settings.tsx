@@ -6,13 +6,6 @@ import { useThemeStore, THEME_PRESETS } from "../stores/theme.js";
 import { useColorModeStore, type ColorMode } from "../stores/colorMode.js";
 import { authInputClass, authLabelClass } from "../components/layout/AuthCard.js";
 import { ApiKeysSection } from "../components/settings/ApiKeysSection.js";
-import {
-  deriveLoginMaterial,
-  generateSalt,
-  toBase64,
-  packWrappedKey,
-  wrapKey,
-} from "../lib/crypto.js";
 
 const STORAGE_QUERY = `
   query StorageUsage {
@@ -21,8 +14,8 @@ const STORAGE_QUERY = `
 `;
 
 const CHANGE_PASSWORD_MUTATION = `
-  mutation ChangePassword($currentServerAuthProof: String!, $wrappedARKByPassword: String!, $argon2Params: Argon2ParamsInput!, $serverAuthProof: String!) {
-    changePassword(currentServerAuthProof: $currentServerAuthProof, wrappedARKByPassword: $wrappedARKByPassword, argon2Params: $argon2Params, serverAuthProof: $serverAuthProof)
+  mutation ChangePassword($currentPassword: String!, $newPassword: String!) {
+    changePassword(currentPassword: $currentPassword, newPassword: $newPassword)
   }
 `;
 
@@ -79,50 +72,11 @@ export function Settings() {
       return;
     }
 
-    const ark = useAuthStore.getState().ark;
-    const currentUser = useAuthStore.getState().user;
-    if (!ark || !currentUser) {
-      setPwError("Session not unlocked — please log in again");
-      return;
-    }
-
     setPwLoading(true);
     try {
-      // Prove knowledge of the current password (derived with the *current* params)
-      const { serverAuthProof: currentProof } = await deriveLoginMaterial(
-        currentPassword,
-        currentUser.crypto.argon2Params,
-      );
-
-      const salt = generateSalt();
-      const params = {
-        memoryKB: 19456,
-        iterations: 2,
-        parallelism: 1,
-        saltB64: toBase64(salt),
-      };
-
-      // Single Argon2 run: get both the new ARK-wrapping key and server auth proof
-      const { arkWrapKey, serverAuthProof } = await deriveLoginMaterial(newPassword, params);
-      const wrappedArkData = await wrapKey(ark, arkWrapKey);
-      const wrappedARKByPassword = toBase64(packWrappedKey(wrappedArkData.data, wrappedArkData.iv));
-
       await gqlRequest(CHANGE_PASSWORD_MUTATION, {
-        currentServerAuthProof: toBase64(currentProof),
-        wrappedARKByPassword,
-        argon2Params: params,
-        serverAuthProof: toBase64(serverAuthProof),
-      });
-
-      // Update stored user crypto so the next Unlock works with the new password
-      setUser({
-        ...currentUser,
-        crypto: {
-          ...currentUser.crypto,
-          wrappedARKByPassword,
-          argon2Params: params,
-          lastPasswordChangeAt: new Date().toISOString(),
-        },
+        currentPassword,
+        newPassword,
       });
 
       setCurrentPassword("");

@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import { gqlRequest } from "../lib/graphql.js";
-import { downloadSharedFile, DOWNLOAD_SUCCESS_EVENT } from "../lib/download.js";
-import { unwrapKeyPacked, toBase64, fromBase64, decryptMeta } from "../lib/crypto.js";
-import { deriveShareWrapKey, deriveShareAuthKey, deriveShareCapabilityToken } from "@ddv4/processing";
+import { DOWNLOAD_SUCCESS_EVENT } from "../lib/download.js";
 import type { ShareAccessResponse } from "@ddv4/types/api";
 import { useNotificationStore } from "../stores/notifications.js";
 import { AuthCard, authPrimaryButtonClass } from "../components/layout/AuthCard.js";
 
 const ACCESS_SHARE = `
-  query AccessShare($shareId: ID!, $capabilityToken: String!) {
-    accessShare(shareId: $shareId, capabilityToken: $capabilityToken) {
+  query AccessShare($shareId: ID!, $token: String!) {
+    accessShare(shareId: $shareId, token: $token) {
       shareId
-      wrappedAKShare
-      wrappedObjectKeys { fileId primaryManifestBlobId encryptedName encryptedMimeType wrappedFEK }
+      fileId
+      name
+      mimeType
+      primaryManifestBlobId
       allowContent
+      allowPreview
     }
   }
 `;
@@ -25,8 +26,7 @@ interface ResolvedShareInfo {
   mimeType: string;
   allowContent: boolean;
   manifestBlobId: string;
-  rootFek: CryptoKey;
-  capabilityTokenB64: string;
+  token: string;
 }
 
 export function SharedFile() {
@@ -49,21 +49,17 @@ export function SharedFile() {
   useEffect(() => {
     if (!shareId) return;
 
-    const linkSecret = window.location.hash.replace(/^#/, "");
-    if (!linkSecret) {
-      setError("Share secret not found in URL fragment");
+    const token = window.location.hash.replace(/^#/, "");
+    if (!token) {
+      setError("Share token not found in URL fragment");
       return;
     }
 
     (async () => {
       try {
-        const secretBytes = fromBase64(linkSecret);
-        const shareAuthKey = await deriveShareAuthKey(secretBytes);
-        const capabilityTokenB64 = toBase64(await deriveShareCapabilityToken(shareAuthKey));
-
         const { accessShare } = await gqlRequest<{ accessShare: ShareAccessResponse | null }>(ACCESS_SHARE, {
           shareId,
-          capabilityToken: capabilityTokenB64,
+          token,
         });
 
         if (!accessShare) {
@@ -71,30 +67,13 @@ export function SharedFile() {
           return;
         }
 
-        const shareWrapKey = await deriveShareWrapKey(secretBytes);
-        const shareKey = await unwrapKeyPacked(accessShare.wrappedAKShare, shareWrapKey, ["wrapKey", "unwrapKey"]);
-        const wrappedFEK = accessShare.wrappedObjectKeys[0]?.wrappedFEK;
-        if (!wrappedFEK) throw new Error("Share does not include file decryption material");
-        const rootFek = await unwrapKeyPacked(wrappedFEK, shareKey, ["wrapKey", "unwrapKey"]);
-
-        const key = accessShare.wrappedObjectKeys[0];
-        const fileName = key?.encryptedName
-          ? await decryptMeta(rootFek, key.encryptedName)
-          : key?.fileId ?? "shared-file";
-        const mimeType = key?.encryptedMimeType
-          ? await decryptMeta(rootFek, key.encryptedMimeType)
-          : "application/octet-stream";
-
-        const manifestBlobId = key?.primaryManifestBlobId ?? "";
-
         setInfo({
           shareId: accessShare.shareId,
-          fileName,
-          mimeType,
+          fileName: accessShare.name ?? "shared-file",
+          mimeType: accessShare.mimeType ?? "application/octet-stream",
           allowContent: accessShare.allowContent,
-          manifestBlobId,
-          rootFek,
-          capabilityTokenB64,
+          manifestBlobId: accessShare.primaryManifestBlobId ?? "",
+          token,
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load share");
@@ -107,14 +86,23 @@ export function SharedFile() {
     setDownloading(true);
     setError("");
     try {
-      await downloadSharedFile({
-        fileName: info.fileName,
-        mimeType: info.mimeType,
-        manifestBlobId: info.manifestBlobId,
-        rootFek: info.rootFek,
-        shareId,
-        capabilityToken: info.capabilityTokenB64,
+      // TODO(Phase 4): rewrite download to fetch plaintext chunks directly
+      const response = await fetch(`/api/blob/${info.manifestBlobId}`, {
+        headers: {
+          "x-share-id": shareId,
+          "x-share-token": info.token,
+        },
       });
+      if (!response.ok) throw new Error("Download failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = info.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Download failed";
       setError(message);

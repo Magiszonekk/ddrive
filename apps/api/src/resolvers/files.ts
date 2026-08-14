@@ -1,4 +1,4 @@
-// DiscorDrive v4 — File resolvers (secure files v2)
+// ddrive v4 — File resolvers
 
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
@@ -6,25 +6,22 @@ import { db } from "@ddv4/database";
 import { downloadChunk, getChunkUrl, parseWebhookUrls, WebhookRateLimiter, type WebhookInfo, downloadChunkBot, getChunkUrlBot, type BotInfo } from "@ddv4/discord-client";
 import { getPoolFor, placementFromBlobRecord, placementFromRow, type PlacementRow, type PoolRole } from "../storage/provider.js";
 import { getConfiguredReplicaKinds } from "../storage/replica-pools.js";
-import type { InitSecureUploadRequest, UploadedBlobTransportInput } from "@ddv4/types/api";
+import type { InitUploadRequest, UploadedBlobTransportInput } from "@ddv4/types/api";
 import { pluginRegistry } from "../plugin-registry.js";
 
 export async function initUpload(
   ownerUserId: string,
-  input: InitSecureUploadRequest,
+  input: InitUploadRequest,
 ): Promise<{ fileId: string; status: "uploading" }> {
   const file = await db.file.create({
     data: {
       ownerUserId,
       parentFolderId: input.parentFolderId ?? null,
-      encryptedName: input.encryptedName ?? null,
-      encryptedMimeType: input.encryptedMimeType ?? null,
+      name: input.name ?? null,
+      mimeType: input.mimeType ?? null,
       primaryManifestBlobId: null,
-      wrappedFEK: Buffer.from(input.wrappedFEK, "base64"),
-      wrappedFEKPreview: input.wrappedFEKPreview ? Buffer.from(input.wrappedFEKPreview, "base64") : null,
-      dedupeTokenB64: input.dedupeTokenB64 ?? null,
       status: "UPLOADING",
-      totalCiphertextBytes: BigInt(input.totalCiphertextBytes),
+      totalBytes: BigInt(input.totalBytes),
       chunkCount: input.chunkCount,
     },
   });
@@ -32,22 +29,10 @@ export async function initUpload(
   return { fileId: file.id, status: "uploading" };
 }
 
-// Dedupe lookup: the token is HMAC(per-user dedupe key, content hash) computed
-// client-side, so the server can match equality without learning the content
-// hash itself. Returns the existing live file for that token, if any.
-export async function getFileByDedupeToken(ownerUserId: string, dedupeTokenB64: string) {
-  return db.file.findFirst({
-    where: { ownerUserId, dedupeTokenB64, deletedAt: null, status: "READY" },
-  });
-}
-
-// Attaches a client-generated, client-encrypted low-res preview to a file.
-// The preview blob must already be uploaded (PUT /api/blob/{previewBlobId}).
 export async function setFilePreview(
   ownerUserId: string,
   fileId: string,
   previewBlobId: string,
-  wrappedFEKPreview: string,
 ): Promise<boolean> {
   const file = await db.file.findFirst({ where: { id: fileId, ownerUserId } });
   if (!file) throw new Error("File not found");
@@ -57,10 +42,7 @@ export async function setFilePreview(
 
   await db.file.update({
     where: { id: fileId },
-    data: {
-      previewBlobId,
-      wrappedFEKPreview: Buffer.from(wrappedFEKPreview, "base64"),
-    },
+    data: { previewBlobId },
   });
   return true;
 }
@@ -69,7 +51,7 @@ export async function commitManifest(
   ownerUserId: string,
   fileId: string,
   manifestBlobId: string,
-  totalCiphertextBytes: string,
+  totalBytes: string,
   chunkCount: number,
   blobs: UploadedBlobTransportInput[],
 ): Promise<{ success: boolean }> {
@@ -81,9 +63,6 @@ export async function commitManifest(
   if (!manifestBlob) throw new Error("Manifest blob not found in commit payload");
 
   await db.$transaction(async (tx) => {
-    // Blob records are normally already written by the upload handler;
-    // skipDuplicates keeps those server-written rows authoritative and only
-    // fills in any the handler may have missed.
     await tx.blobTransport.createMany({
       skipDuplicates: true,
       data: blobs.map((blob) => ({
@@ -94,14 +73,13 @@ export async function commitManifest(
         discordMessageId: blob.discordMessageId ?? null,
         discordChannelId: blob.discordChannelId ?? null,
         webhookId: blob.webhookId ?? null,
-        ciphertextSizeBytes: BigInt(blob.ciphertextSizeBytes),
-        ciphertextHash: blob.ciphertextHash ?? null,
+        sizeBytes: BigInt(blob.sizeBytes),
+        contentHash: blob.contentHash ?? null,
         healthStatus: null,
         healthCheckedAt: null,
       })),
     });
 
-    // Same catch-up for placements (unique on blobId+provider+poolRole).
     await tx.blobPlacement.createMany({
       skipDuplicates: true,
       data: blobs.map((blob) => ({
@@ -117,7 +95,6 @@ export async function commitManifest(
       })),
     });
 
-    // Queue replica copies for any blob that slipped past the upload handler
     const replicaKinds = getConfiguredReplicaKinds();
     if (replicaKinds.length > 0) {
       await tx.blobPlacement.createMany({
@@ -138,7 +115,7 @@ export async function commitManifest(
       where: { id: fileId },
       data: {
         primaryManifestBlobId: manifestBlobId,
-        totalCiphertextBytes: BigInt(totalCiphertextBytes),
+        totalBytes: BigInt(totalBytes),
         chunkCount,
         status: "READY",
       },
@@ -148,16 +125,14 @@ export async function commitManifest(
   await pluginRegistry.emitAsync("file:uploaded", {
     fileId,
     userId: ownerUserId,
-    mimeType: "application/octet-stream",
-    size: BigInt(totalCiphertextBytes),
+    mimeType: file.mimeType ?? "application/octet-stream",
+    size: BigInt(totalBytes),
     sha256: manifestBlobId,
   });
 
   return { success: true };
 }
 
-// Resume support: reports which chunk blobs of an UPLOADING file already made
-// it to storage, so a client can skip them on retry instead of re-uploading.
 export async function getUploadStatus(ownerUserId: string, fileId: string) {
   const file = await db.file.findFirst({ where: { id: fileId, ownerUserId } });
   if (!file) throw new Error("File not found");
@@ -177,7 +152,7 @@ export async function getUploadStatus(ownerUserId: string, fileId: string) {
     const match = blob.blobId.match(/:chunk:(\d+)$/);
     if (match) uploadedChunkIndices.push(Number(match[1]));
   }
-  uploadedChunkIndices.sort((a, b) => a - b);
+  uploadedChunkIndices.sort((a: number, b: number) => a - b);
 
   return {
     fileId,
@@ -197,7 +172,7 @@ export async function deleteFile(ownerUserId: string, fileId: string): Promise<b
     data: { deletedAt: new Date() },
   });
 
-  await db.shareWrappedObjectKey.deleteMany({ where: { fileId } });
+  await db.share.deleteMany({ where: { fileId, ownerUserId } });
   await pluginRegistry.emitAsync("file:deleted", { fileId, userId: ownerUserId });
   return true;
 }
@@ -233,9 +208,6 @@ type PurgeableBlob = {
   placements?: PlacementRow[];
 };
 
-// Best-effort physical deletion of every copy of every blob. Failures are
-// logged, not thrown: a purge must never be blocked by an already-deleted
-// Discord message or missing local file.
 async function deleteBlobsBestEffort(blobs: PurgeableBlob[]): Promise<void> {
   const warn = (blobId: string, error: unknown) =>
     console.warn(JSON.stringify({
@@ -249,7 +221,6 @@ async function deleteBlobsBestEffort(blobs: PurgeableBlob[]): Promise<void> {
   for (const blob of blobs) {
     const placements = blob.placements ?? [];
     if (placements.length === 0) {
-      // Row predates the placement backfill — legacy columns are all we have.
       try {
         await getPoolFor(blob.storageKind).delete(placementFromBlobRecord(blob));
       } catch (error) {
@@ -259,8 +230,6 @@ async function deleteBlobsBestEffort(blobs: PurgeableBlob[]): Promise<void> {
     }
 
     for (const placement of placements) {
-      // PENDING rows have no physical copy yet; their DB row is removed by the
-      // caller's cascade delete, which also dequeues them from replication.
       if (placement.status === "PENDING" && !placement.messageId) continue;
       try {
         await getPoolFor(placement.provider, placement.poolRole as PoolRole).delete(
@@ -289,7 +258,7 @@ async function purgeFileRecord(file: PurgeableFile): Promise<void> {
 
   await db.$transaction([
     db.blobTransport.deleteMany({ where: { blobId: { in: blobs.map((b) => b.blobId) } } }),
-    db.shareWrappedObjectKey.deleteMany({ where: { fileId: file.id } }),
+    db.share.deleteMany({ where: { fileId: file.id } }),
     db.file.delete({ where: { id: file.id } }),
   ]);
 }
@@ -305,7 +274,6 @@ export async function restoreFile(ownerUserId: string, fileId: string): Promise<
   const file = await db.file.findFirst({ where: { id: fileId, ownerUserId, deletedAt: { not: null } } });
   if (!file) throw new Error("File not found in trash");
 
-  // If the original folder was deleted in the meantime, restore to root.
   let parentFolderId = file.parentFolderId;
   if (parentFolderId) {
     const parent = await db.folder.findFirst({ where: { id: parentFolderId, ownerUserId } });
@@ -329,8 +297,6 @@ export async function emptyTrash(ownerUserId: string): Promise<number> {
   return files.length;
 }
 
-// Permanently removes trashed files past the retention window. Runs across all
-// users — invoked from the server's periodic sweep, not from user requests.
 export async function purgeExpiredTrash(retentionDays = 30): Promise<number> {
   const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
   const files = await db.file.findMany({ where: { deletedAt: { lt: cutoff } } });
@@ -355,23 +321,11 @@ export async function purgeExpiredTrash(retentionDays = 30): Promise<number> {
 
 // === Abandoned uploads ===
 
-/**
- * Uploads that died mid-flight — the tab crashed, the network dropped, the
- * client never reached commitManifest. Their File row stays UPLOADING forever:
- * invisible to getFiles and to the storage-usage total, while the chunks that
- * did land keep occupying provider storage with nothing left to reference them.
- *
- * Staleness is measured from the last chunk that actually arrived, never from
- * creation — a slow multi-hour upload is still making progress and must not be
- * swept out from under itself.
- */
 export async function findStaleUploads(
   staleAfterMinutes = 60,
 ): Promise<Array<{ id: string; lastActivityAt: Date; blobCount: number }>> {
   const cutoff = new Date(Date.now() - staleAfterMinutes * 60_000);
 
-  // A file created after the cutoff cannot be stale (last activity >= creation),
-  // so the CTE prefilter is safe and keeps the unindexable LIKE join small.
   return db.$queryRaw<Array<{ id: string; lastActivityAt: Date; blobCount: number }>>`
     WITH candidates AS (
       SELECT id, "createdAt" FROM "File"
@@ -392,8 +346,6 @@ export async function purgeStaleUploads(staleAfterMinutes = 60): Promise<number>
 
   let purged = 0;
   for (const { id } of stale) {
-    // Re-read under the current state: an upload can commit between the scan
-    // and the purge, and a committed file must never be swept.
     const file = await db.file.findUnique({ where: { id } });
     if (!file || file.status !== "UPLOADING" || file.deletedAt) continue;
 
@@ -427,12 +379,12 @@ export async function getFile(ownerUserId: string, fileId: string) {
 export async function getStorageUsage(ownerUserId: string) {
   const result = await db.file.aggregate({
     where: { ownerUserId, deletedAt: null, status: "READY" },
-    _sum: { totalCiphertextBytes: true },
+    _sum: { totalBytes: true },
     _count: true,
   });
 
   return {
-    totalBytes: (result._sum.totalCiphertextBytes ?? BigInt(0)).toString(),
+    totalBytes: (result._sum.totalBytes ?? BigInt(0)).toString(),
     fileCount: result._count,
   };
 }
@@ -449,7 +401,7 @@ type HealthCheckChunkInfo = {
   webhookId: string;
   channelId: string | null;
   size: number;
-  encryptedHash: string | null;
+  contentHash: string | null;
   healthStatus: string | null;
   healthCheckedAt: string | null;
 };
@@ -480,21 +432,6 @@ function parseChunkIndex(blobId: string): number {
   return m ? Number(m[1]) : 0;
 }
 
-async function runTasksWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
-  const results: T[] = new Array(tasks.length);
-  let cursor = 0;
-  async function worker() {
-    while (true) {
-      const index = cursor++;
-      if (index >= tasks.length) return;
-      results[index] = await tasks[index]();
-    }
-  }
-  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, tasks.length || 1)) }, () => worker());
-  await Promise.all(workers);
-  return results;
-}
-
 export async function getFilesForHealthCheckDisplay(
   ownerUserId: string,
 ): Promise<HealthCheckFileInfo[]> {
@@ -515,7 +452,7 @@ export async function getFilesForHealthCheckDisplay(
       fileId: file.id,
       fileName: file.id,
       chunkCount: file.chunkCount,
-      chunks: chunks.map((chunk) => ({
+      chunks: chunks.map((chunk: { blobId: string; healthStatus: string | null; healthCheckedAt: Date | null }) => ({
         id: chunk.blobId,
         index: parseChunkIndex(chunk.blobId),
         storageKind: "DISCORD" as const,
@@ -524,7 +461,7 @@ export async function getFilesForHealthCheckDisplay(
         webhookId: "",
         channelId: null,
         size: 0,
-        encryptedHash: null,
+        contentHash: null,
         healthStatus: chunk.healthStatus ?? null,
         healthCheckedAt: chunk.healthCheckedAt ? chunk.healthCheckedAt.toISOString() : null,
       })),
@@ -554,7 +491,7 @@ export async function getFilesForHealthCheck(
     const sampleSize = Math.max(1, Math.ceil(files.length * (pct / 100)));
     files = files
       .map((file) => ({ sortKey: Math.random(), file }))
-      .sort((a, b) => a.sortKey - b.sortKey)
+      .sort((a: { sortKey: number }, b: { sortKey: number }) => a.sortKey - b.sortKey)
       .slice(0, sampleSize)
       .map((entry) => entry.file);
   }
@@ -573,7 +510,7 @@ export async function getFilesForHealthCheck(
       fileName: file.id,
       chunkCount: file.chunkCount,
       chunks: chunks
-        .map((chunk) => ({
+        .map((chunk: typeof chunks[number]) => ({
           id: chunk.blobId,
           index: parseChunkIndex(chunk.blobId),
           storageKind: chunk.storageKind,
@@ -581,12 +518,12 @@ export async function getFilesForHealthCheck(
           messageId: chunk.discordMessageId ?? "",
           webhookId: chunk.webhookId ?? "",
           channelId: chunk.discordChannelId ?? null,
-          size: Number(chunk.ciphertextSizeBytes),
-          encryptedHash: chunk.ciphertextHash ?? null,
+          size: Number(chunk.sizeBytes),
+          contentHash: chunk.contentHash ?? null,
           healthStatus: chunk.healthStatus ?? null,
           healthCheckedAt: chunk.healthCheckedAt ? chunk.healthCheckedAt.toISOString() : null,
         }))
-        .sort((a, b) => a.index - b.index),
+        .sort((a: { index: number }, b: { index: number }) => a.index - b.index),
     } satisfies HealthCheckFileInfo;
   }));
 
@@ -598,8 +535,6 @@ export async function updateChunkHealthBatch(
   updates: ChunkHealthUpdate[],
 ): Promise<boolean> {
   const checkedAt = new Date();
-  // Placement status mirrors chunk health: a HEALTHY check re-activates,
-  // MISSING/MODIFIED park the placement so reads prefer other copies.
   const placementStatus = { HEALTHY: "ACTIVE", MISSING: "MISSING", MODIFIED: "MODIFIED" } as const;
   await db.$transaction(
     updates.flatMap((update) => [
@@ -612,7 +547,6 @@ export async function updateChunkHealthBatch(
           blobId: update.chunkId,
           poolRole: "PRIMARY",
           blob: { ownerUserId },
-          // Never resurrect queue states from a health sweep
           status: { in: ["ACTIVE", "MISSING", "MODIFIED"] },
         },
         data: { status: placementStatus[update.status], healthCheckedAt: checkedAt },
@@ -622,7 +556,7 @@ export async function updateChunkHealthBatch(
   return true;
 }
 
-// === Replication status (HealthCheck page metrics) ===
+// === Replication status ===
 
 export async function getReplicationStatus(ownerUserId: string) {
   const [groups, oldestPending, failedPlacements] = await Promise.all([
@@ -643,8 +577,8 @@ export async function getReplicationStatus(ownerUserId: string) {
 
   const replicaKinds = getConfiguredReplicaKinds();
   const queueDepth = groups
-    .filter((g) => g.status === "PENDING" || g.status === "MISSING")
-    .reduce((sum, g) => sum + g._count._all, 0);
+    .filter((g: typeof groups[number]) => g.status === "PENDING" || g.status === "MISSING")
+    .reduce((sum: number, g: typeof groups[number]) => sum + g._count._all, 0);
 
   return {
     enabled: replicaKinds.length > 0,
@@ -654,7 +588,7 @@ export async function getReplicationStatus(ownerUserId: string) {
       ? Math.floor((Date.now() - oldestPending.createdAt.getTime()) / 1000)
       : null,
     failedPlacements,
-    placements: groups.map((g) => ({
+    placements: groups.map((g: typeof groups[number]) => ({
       provider: g.provider,
       poolRole: g.poolRole,
       status: g.status,
@@ -687,7 +621,6 @@ export async function runHealthCheck(
 
   const webhookMap = new Map<string, WebhookInfo>(parseWebhookUrls(webhookUrls).map((w) => [w.id, w]));
 
-  // Build bot map from BOT_n + BOT_n_CHANNEL env vars
   const botMap = new Map<string, BotInfo>();
   for (let i = 1; i <= 20; i++) {
     const token = process.env[`BOT_${i}`]?.trim();
@@ -718,10 +651,10 @@ export async function runHealthCheck(
           await stat(chunk.storagePath);
           return { chunkId: chunk.id, status: "HEALTHY" };
         }
-        if (!chunk.encryptedHash) return { chunkId: chunk.id, status: "SKIPPED" };
+        if (!chunk.contentHash) return { chunkId: chunk.id, status: "SKIPPED" };
         const data = await readFile(chunk.storagePath);
         const hash = createHash("sha256").update(data).digest("hex");
-        return { chunkId: chunk.id, status: hash === chunk.encryptedHash ? "HEALTHY" : "MODIFIED" };
+        return { chunkId: chunk.id, status: hash === chunk.contentHash ? "HEALTHY" : "MODIFIED" };
       }
 
       if (chunk.webhookId.startsWith("BOT_")) {
@@ -732,7 +665,7 @@ export async function runHealthCheck(
           await getChunkUrlBot(bot, chunk.messageId, botChannelId, rateLimiter);
           return { chunkId: chunk.id, status: "HEALTHY" };
         }
-        if (!chunk.encryptedHash) return { chunkId: chunk.id, status: "SKIPPED" };
+        if (!chunk.contentHash) return { chunkId: chunk.id, status: "SKIPPED" };
         const stream = await downloadChunkBot(bot, chunk.messageId, botChannelId, rateLimiter);
         const reader = stream.getReader();
         const hasher = createHash("sha256");
@@ -742,7 +675,7 @@ export async function runHealthCheck(
           hasher.update(value);
         }
         const hash = hasher.digest("hex");
-        return { chunkId: chunk.id, status: hash === chunk.encryptedHash ? "HEALTHY" : "MODIFIED" };
+        return { chunkId: chunk.id, status: hash === chunk.contentHash ? "HEALTHY" : "MODIFIED" };
       }
 
       const webhook = webhookMap.get(chunk.webhookId);
@@ -751,7 +684,7 @@ export async function runHealthCheck(
         await getChunkUrl(webhook, chunk.messageId, rateLimiter);
         return { chunkId: chunk.id, status: "HEALTHY" };
       }
-      if (!chunk.encryptedHash) return { chunkId: chunk.id, status: "SKIPPED" };
+      if (!chunk.contentHash) return { chunkId: chunk.id, status: "SKIPPED" };
       const stream = await downloadChunk(webhook, chunk.messageId, rateLimiter);
       const reader = stream.getReader();
       const hasher = createHash("sha256");
@@ -761,7 +694,7 @@ export async function runHealthCheck(
         hasher.update(value);
       }
       const hash = hasher.digest("hex");
-      return { chunkId: chunk.id, status: hash === chunk.encryptedHash ? "HEALTHY" : "MODIFIED" };
+      return { chunkId: chunk.id, status: hash === chunk.contentHash ? "HEALTHY" : "MODIFIED" };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message.toLowerCase() : "";
       const isNotFound = msg.includes("not found") || msg.includes("404");

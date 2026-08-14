@@ -21,8 +21,8 @@ const TEST_PASSWORD = process.env.DDC_TEST_PASSWORD ?? "speedtest123";
 
 type BlobUploadResponse = {
   blobId: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
   storageKind: "LOCAL" | "DISCORD";
   storagePath: string;
   discordMessageId?: string;
@@ -34,8 +34,8 @@ type UploadedBlobTransportInput = {
   blobId: string;
   storageKind: string;
   storagePath: string;
-  ciphertextSizeBytes: string;
-  ciphertextHash?: string;
+  sizeBytes: string;
+  contentHash?: string;
   discordMessageId?: string;
   discordChannelId?: string;
   webhookId?: string;
@@ -225,12 +225,12 @@ async function main() {
     manifest.chunks.push({
       index: chunk.index,
       blobId,
-      ciphertextSizeBytes: ciphertext.byteLength,
+      sizeBytes: ciphertext.byteLength,
     });
     uploadedBlobRecords.push({
       blobId: result.blobId,
-      ciphertextSizeBytes: result.ciphertextSizeBytes,
-      ciphertextHash: result.ciphertextHash,
+      sizeBytes: result.sizeBytes,
+      contentHash: result.contentHash,
       storageKind: result.storageKind,
       storagePath: result.storagePath,
       discordMessageId: result.discordMessageId,
@@ -266,8 +266,8 @@ async function main() {
   });
   uploadedBlobRecords.push({
     blobId: manifestResult.blobId,
-    ciphertextSizeBytes: manifestResult.ciphertextSizeBytes,
-    ciphertextHash: manifestResult.ciphertextHash,
+    sizeBytes: manifestResult.sizeBytes,
+    contentHash: manifestResult.contentHash,
     storageKind: manifestResult.storageKind,
     storagePath: manifestResult.storagePath,
     discordMessageId: manifestResult.discordMessageId,

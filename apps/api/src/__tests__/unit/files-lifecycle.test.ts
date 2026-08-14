@@ -13,7 +13,7 @@ const {
   initUpload,
   commitManifest,
   getUploadStatus,
-  getFileByDedupeToken,
+  getFiles,
   setFilePreview,
   deleteFile,
   restoreFile,
@@ -30,7 +30,6 @@ async function resetFixtures() {
   await db.blobTransport.deleteMany({ where: { ownerUserId: { in: [ownerUserId, otherUserId] } } });
   await db.file.deleteMany({ where: { ownerUserId: { in: [ownerUserId, otherUserId] } } });
   await db.folder.deleteMany({ where: { ownerUserId: { in: [ownerUserId, otherUserId] } } });
-  await db.userCrypto.deleteMany({ where: { userId: { in: [ownerUserId, otherUserId] } } });
   await db.user.deleteMany({ where: { id: { in: [ownerUserId, otherUserId] } } });
 
   for (const userId of [ownerUserId, otherUserId]) {
@@ -39,16 +38,7 @@ async function resetFixtures() {
         id: userId,
         email: `${userId}@example.com`,
         username: userId,
-        crypto: {
-          create: {
-            wrappedARKByPassword: Buffer.from(`pw-${userId}`),
-            wrappedARKByRecovery: Buffer.from(`recovery-${userId}`),
-            argon2MemoryKB: 65536,
-            argon2Iterations: 3,
-            argon2Parallelism: 1,
-            argon2SaltB64: "c2FsdA==",
-          },
-        },
+        passwordHash: `password-hash-${userId}`,
       },
     });
   }
@@ -57,8 +47,7 @@ async function resetFixtures() {
     data: {
       id: folderId,
       ownerUserId,
-      encryptedBody: Buffer.from("folder-body"),
-      wrappedFolderKey: Buffer.from("folder-key"),
+      name: "lifecycle-folder",
     },
   });
 }
@@ -68,7 +57,7 @@ function manifestBlobInput(blobId: string) {
     blobId,
     storageKind: "LOCAL" as const,
     storagePath: `/tmp/${blobId}`,
-    ciphertextSizeBytes: "100",
+    sizeBytes: "100",
   };
 }
 
@@ -78,7 +67,7 @@ describe("secure file lifecycle", () => {
     await resetFixtures();
   });
 
-  it("exposes only encrypted metadata in the initUpload GraphQL contract", async () => {
+  it("exposes the plaintext file metadata contract on the initUpload mutation", async () => {
     const schema = buildSchema();
     const mutationType = schema.getMutationType();
     const initUploadField = mutationType?.getFields().initUpload;
@@ -86,28 +75,25 @@ describe("secure file lifecycle", () => {
     expect(initUploadField).toBeDefined();
     expect(initUploadField?.args.map((arg) => arg.name)).toEqual([
       "parentFolderId",
-      "encryptedName",
-      "encryptedMimeType",
-      "wrappedFEK",
-      "wrappedFEKPreview",
-      "dedupeTokenB64",
-      "totalCiphertextBytes",
+      "name",
+      "mimeType",
+      "totalBytes",
       "chunkCount",
     ]);
-    // Zero-knowledge contract: plaintext filename/mimeType must never appear
-    expect(initUploadField?.args.some((arg) => arg.name === "name")).toBe(false);
-    expect(initUploadField?.args.some((arg) => arg.name === "mimeType")).toBe(false);
+    // The old zero-knowledge crypto contract fields must never come back
+    expect(initUploadField?.args.some((arg) => arg.name === "wrappedFEK")).toBe(false);
+    expect(initUploadField?.args.some((arg) => arg.name === "wrappedFEKPreview")).toBe(false);
+    expect(initUploadField?.args.some((arg) => arg.name === "dedupeTokenB64")).toBe(false);
+    expect(initUploadField?.args.some((arg) => arg.name === "encryptedName")).toBe(false);
+    expect(initUploadField?.args.some((arg) => arg.name === "encryptedMimeType")).toBe(false);
   });
 
-  it("initUpload creates an UPLOADING file and preserves encrypted, preview and dedupe fields", async () => {
+  it("initUpload creates an UPLOADING file with the given metadata", async () => {
     const input = {
       parentFolderId: folderId,
-      encryptedName: Buffer.from("encrypted-name").toString("base64"),
-      encryptedMimeType: Buffer.from("encrypted-mime").toString("base64"),
-      dedupeTokenB64: "ZGVkdXBlLXRva2Vu",
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      wrappedFEKPreview: Buffer.from("wrapped-fek-preview").toString("base64"),
-      totalCiphertextBytes: "12345",
+      name: "lifecycle.bin",
+      mimeType: "application/octet-stream",
+      totalBytes: "12345",
       chunkCount: 7,
     };
 
@@ -120,19 +106,15 @@ describe("secure file lifecycle", () => {
     expect(saved.primaryManifestBlobId).toBeNull();
     expect(saved.previewBlobId).toBeNull();
     expect(saved.status).toBe("UPLOADING");
-    expect(saved.totalCiphertextBytes.toString()).toBe("12345");
+    expect(saved.totalBytes.toString()).toBe("12345");
     expect(saved.chunkCount).toBe(7);
-    expect(saved.encryptedName).toBe(input.encryptedName);
-    expect(saved.encryptedMimeType).toBe(input.encryptedMimeType);
-    expect(saved.dedupeTokenB64).toBe("ZGVkdXBlLXRva2Vu");
-    expect(Buffer.from(saved.wrappedFEK).toString("base64")).toBe(input.wrappedFEK);
-    expect(Buffer.from(saved.wrappedFEKPreview!).toString("base64")).toBe(input.wrappedFEKPreview);
+    expect(saved.name).toBe(input.name);
+    expect(saved.mimeType).toBe(input.mimeType);
   });
 
   it("commitManifest sets manifest blob and moves file from UPLOADING to READY", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 2,
     });
 
@@ -143,7 +125,7 @@ describe("secure file lifecycle", () => {
     const saved = await db.file.findUniqueOrThrow({ where: { id: fileId } });
     expect(saved.primaryManifestBlobId).toBe("manifest-blob-1");
     expect(saved.status).toBe("READY");
-    expect(saved.totalCiphertextBytes.toString()).toBe("100");
+    expect(saved.totalBytes.toString()).toBe("100");
     expect(saved.chunkCount).toBe(2);
     expect(pluginRegistry.emitAsync).toHaveBeenCalledWith("file:uploaded", {
       fileId,
@@ -156,8 +138,7 @@ describe("secure file lifecycle", () => {
 
   it("commitManifest rejects files that are no longer in UPLOADING state", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 2,
     });
 
@@ -170,8 +151,7 @@ describe("secure file lifecycle", () => {
 
   it("commitManifest rejects a manifest blob missing from the commit payload", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 2,
     });
 
@@ -186,15 +166,14 @@ describe("secure file lifecycle", () => {
 
   it("uploadStatus reports stored chunk indices and manifest presence for resume", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "300",
+      totalBytes: "300",
       chunkCount: 3,
     });
 
     await db.blobTransport.createMany({
       data: [
-        { blobId: `${fileId}:chunk:0`, ownerUserId, storageKind: "LOCAL", storagePath: "/tmp/c0", ciphertextSizeBytes: BigInt(100) },
-        { blobId: `${fileId}:chunk:2`, ownerUserId, storageKind: "LOCAL", storagePath: "/tmp/c2", ciphertextSizeBytes: BigInt(100) },
+        { blobId: `${fileId}:chunk:0`, ownerUserId, storageKind: "LOCAL", storagePath: "/tmp/c0", sizeBytes: BigInt(100) },
+        { blobId: `${fileId}:chunk:2`, ownerUserId, storageKind: "LOCAL", storagePath: "/tmp/c2", sizeBytes: BigInt(100) },
       ],
     });
 
@@ -205,57 +184,50 @@ describe("secure file lifecycle", () => {
     expect(status.chunkCount).toBe(3);
   });
 
-  it("fileByDedupeToken finds live files only and is scoped per owner", async () => {
-    const token = "dGVzdC1kZWR1cGU=";
+  it("getFiles lists only READY, non-deleted files and is scoped per owner", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      dedupeTokenB64: token,
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
 
-    // UPLOADING files don't count as dedupe hits
-    expect(await getFileByDedupeToken(ownerUserId, token)).toBeNull();
+    // UPLOADING files aren't visible in listings yet
+    expect((await getFiles(ownerUserId, null)).map((f) => f.id)).not.toContain(fileId);
 
-    await commitManifest(ownerUserId, fileId, "manifest-dedupe", "100", 1, [manifestBlobInput("manifest-dedupe")]);
+    await commitManifest(ownerUserId, fileId, "manifest-list", "100", 1, [manifestBlobInput("manifest-list")]);
 
-    expect((await getFileByDedupeToken(ownerUserId, token))?.id).toBe(fileId);
-    expect(await getFileByDedupeToken(otherUserId, token)).toBeNull();
+    expect((await getFiles(ownerUserId, null)).map((f) => f.id)).toContain(fileId);
+    expect((await getFiles(otherUserId, null)).map((f) => f.id)).not.toContain(fileId);
   });
 
   it("setFilePreview attaches an uploaded preview blob to the file", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
     await commitManifest(ownerUserId, fileId, "manifest-prev", "100", 1, [manifestBlobInput("manifest-prev")]);
 
     const previewBlobId = `${fileId}:preview`;
     await db.blobTransport.create({
-      data: { blobId: previewBlobId, ownerUserId, storageKind: "LOCAL", storagePath: "/tmp/prev", ciphertextSizeBytes: BigInt(10) },
+      data: { blobId: previewBlobId, ownerUserId, storageKind: "LOCAL", storagePath: "/tmp/prev", sizeBytes: BigInt(10) },
     });
 
-    const wrappedFEKPreview = Buffer.from("wrapped-fek-preview").toString("base64");
-    await expect(setFilePreview(ownerUserId, fileId, previewBlobId, wrappedFEKPreview)).resolves.toBe(true);
+    await expect(setFilePreview(ownerUserId, fileId, previewBlobId)).resolves.toBe(true);
 
     const saved = await db.file.findUniqueOrThrow({ where: { id: fileId } });
     expect(saved.previewBlobId).toBe(previewBlobId);
-    expect(Buffer.from(saved.wrappedFEKPreview!).toString("base64")).toBe(wrappedFEKPreview);
   });
 
   it("setFilePreview rejects preview blobs owned by someone else", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
 
     await db.blobTransport.create({
-      data: { blobId: "foreign-preview", ownerUserId: otherUserId, storageKind: "LOCAL", storagePath: "/tmp/fp", ciphertextSizeBytes: BigInt(10) },
+      data: { blobId: "foreign-preview", ownerUserId: otherUserId, storageKind: "LOCAL", storagePath: "/tmp/fp", sizeBytes: BigInt(10) },
     });
 
-    await expect(setFilePreview(ownerUserId, fileId, "foreign-preview", "AAAA")).rejects.toThrow(
+    await expect(setFilePreview(ownerUserId, fileId, "foreign-preview")).rejects.toThrow(
       "Preview blob not found",
     );
   });
@@ -263,8 +235,7 @@ describe("secure file lifecycle", () => {
   it("trash lifecycle: soft delete, list, restore", async () => {
     const { fileId } = await initUpload(ownerUserId, {
       parentFolderId: folderId,
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
     await commitManifest(ownerUserId, fileId, "manifest-trash", "100", 1, [manifestBlobInput("manifest-trash")]);
@@ -282,12 +253,11 @@ describe("secure file lifecycle", () => {
 
   it("restoreFile falls back to root when the original folder is gone", async () => {
     const tempFolder = await db.folder.create({
-      data: { ownerUserId, encryptedBody: Buffer.from("tmp"), wrappedFolderKey: Buffer.from("tmp-key") },
+      data: { ownerUserId, name: "temp-folder" },
     });
     const { fileId } = await initUpload(ownerUserId, {
       parentFolderId: tempFolder.id,
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
     await commitManifest(ownerUserId, fileId, "manifest-orph", "100", 1, [manifestBlobInput("manifest-orph")]);
@@ -302,8 +272,7 @@ describe("secure file lifecycle", () => {
 
   it("purgeFile hard-deletes the file record and its blob transport rows", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
     await commitManifest(ownerUserId, fileId, `${fileId}:manifest`, "100", 1, [
@@ -320,8 +289,7 @@ describe("secure file lifecycle", () => {
 
   it("purgeFile refuses files that are not in trash", async () => {
     const { fileId } = await initUpload(ownerUserId, {
-      wrappedFEK: Buffer.from("wrapped-fek").toString("base64"),
-      totalCiphertextBytes: "100",
+      totalBytes: "100",
       chunkCount: 1,
     });
     await commitManifest(ownerUserId, fileId, "manifest-live", "100", 1, [manifestBlobInput("manifest-live")]);

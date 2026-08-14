@@ -28,8 +28,8 @@ async function createBlobWithPrimary(blobId: string, bytes: Uint8Array) {
       ownerUserId,
       storageKind: "LOCAL",
       storagePath,
-      ciphertextSizeBytes: BigInt(bytes.byteLength),
-      ciphertextHash: sha256Hex(bytes),
+      sizeBytes: BigInt(bytes.byteLength),
+      contentHash: sha256Hex(bytes),
       placements: {
         create: {
           provider: "LOCAL",
@@ -59,7 +59,7 @@ async function queueReplica(blobId: string) {
 beforeAll(async () => {
   const user = await db.user.upsert({
     where: { email: OWNER_EMAIL },
-    create: { email: OWNER_EMAIL },
+    create: { email: OWNER_EMAIL, passwordHash: "replication-test-password-hash" },
     update: {},
   });
   ownerUserId = user.id;
@@ -157,7 +157,6 @@ describe("replication worker", () => {
       data: {
         id: fileId,
         ownerUserId,
-        wrappedFEK: Buffer.from([0]),
         status: "READY",
         deletedAt: new Date(),
       },
