@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { gqlRequest } from "../lib/graphql.js";
 import { useAuthStore } from "../stores/auth.js";
-import { AuthCard, authInputClass, authLabelClass, authPrimaryButtonClass } from "../components/layout/AuthCard.js";
+import { AuthCard, authInputClass, authLabelClass, authPrimaryButtonClass, authSecondaryButtonClass } from "../components/layout/AuthCard.js";
 import type { LoginResponse } from "@ddv4/types/api";
 
 const LOGIN_MUTATION = `
@@ -84,6 +84,9 @@ export function Login() {
         <button type="submit" disabled={loading} className={authPrimaryButtonClass}>
           {loading ? "Logging in…" : "Log in"}
         </button>
+        <Link to="/upload" className={authSecondaryButtonClass}>
+          Continue without an account
+        </Link>
       </form>
     </AuthCard>
   );

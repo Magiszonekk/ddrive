@@ -34,3 +34,6 @@ export const authLabelClass = "mb-1.5 block text-sm font-medium text-ink-2";
 
 export const authPrimaryButtonClass =
   "flex h-11 w-full items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-accent-ink transition-colors duration-short ease-out hover:bg-accent-hover active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50";
+
+export const authSecondaryButtonClass =
+  "flex h-11 w-full items-center justify-center rounded-md border border-rule-2 bg-paper px-4 text-sm font-medium text-ink transition-colors duration-short ease-out hover:bg-paper-2 active:translate-y-px";
