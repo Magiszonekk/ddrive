@@ -335,6 +335,7 @@ export function buildSchema() {
         ): ShareCreateResult!
 
         revokeShare(shareId: ID!): Boolean!
+        createAnonymousShare(fileId: ID!, allowContent: Boolean!, allowPreview: Boolean): ShareCreateResult!
         reportShare(shareId: ID!, reason: String!, note: String): Boolean!
         claimShare(shareId: ID!, token: String!): Boolean!
         updateChunkHealthBatch(updates: [ChunkHealthUpdateInput!]!): Boolean!
@@ -594,6 +595,10 @@ export function buildSchema() {
         revokeShare: async (_parent: unknown, args: { shareId: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
           return sharingResolvers.revokeShare(auth.userId, args.shareId);
+        },
+        createAnonymousShare: async (_parent: unknown, args: { fileId: string; allowContent: boolean; allowPreview?: boolean }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return sharingResolvers.createAnonymousShare(args.fileId, args.allowContent, args.allowPreview ?? false);
         },
         reportShare: async (_parent: unknown, args: { shareId: string; reason: string; note?: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
