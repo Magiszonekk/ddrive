@@ -30,7 +30,11 @@ function isAudio(mimeType: string) { return mimeType.startsWith("audio/"); }
 export async function handleSharePage(req: Request, params: { shareId: string }): Promise<Response> {
   const url = new URL(req.url);
   const token = url.searchParams.get("t") ?? "";
-  const origin = `${url.protocol}//${url.host}`;
+  // Behind nginx (TLS terminates there), req.url's protocol is always
+  // http:// — trust X-Forwarded-Proto for the public-facing origin so OG
+  // tags and generated links use https:// in production.
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const origin = `${forwardedProto ?? url.protocol.replace(":", "")}://${url.host}`;
 
   if (!token) {
     return new Response(renderErrorPage("Missing share token"), {
