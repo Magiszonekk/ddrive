@@ -95,6 +95,10 @@ function collectReplicaTelegramBotConfigs(): Array<{ id: string; token: string; 
 
 export const serverConfig = {
   databaseUrl: process.env.DATABASE_URL ?? "",
+  // Server-held AES-256-GCM key for chunk encryption at rest on the storage
+  // provider (Phase 1 of the non-E2EE fork — see docs/hermes/concept.md).
+  // Base64-encoded 32 raw bytes. Generate with: openssl rand -base64 32
+  chunkEncryptionKey: process.env.CHUNK_ENCRYPTION_KEY?.trim() ?? "",
   webhooks: collectWebhooks(),
   relayWebhookIds: (process.env.RELAY_WEBHOOK_IDS ?? "")
     .split(",")

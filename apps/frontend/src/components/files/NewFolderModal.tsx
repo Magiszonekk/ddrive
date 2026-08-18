@@ -1,13 +1,11 @@
 import { useState } from "react";
 import { FolderPlus, X } from "lucide-react";
 import { gqlRequest } from "../../lib/graphql.js";
-import { useAuthStore } from "../../stores/auth.js";
-import { generateFolderKey, encryptFolderBody, wrapKey, toBase64, packWrappedKey } from "../../lib/crypto.js";
 import { authInputClass } from "../layout/AuthCard.js";
 
 const CREATE_FOLDER = `
-  mutation CreateFolder($encryptedBodyB64: String!, $wrappedFolderKeyB64: String!, $parentFolderId: ID) {
-    createFolder(encryptedBodyB64: $encryptedBodyB64, wrappedFolderKeyB64: $wrappedFolderKeyB64, parentFolderId: $parentFolderId) {
+  mutation CreateFolder($name: String!, $parentFolderId: ID) {
+    createFolder(name: $name, parentFolderId: $parentFolderId) {
       id
     }
   }
@@ -20,7 +18,6 @@ interface Props {
 }
 
 export function NewFolderModal({ parentFolderId, onCreated, onClose }: Props) {
-  const filesKey = useAuthStore((s) => s.filesKey);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -29,15 +26,10 @@ export function NewFolderModal({ parentFolderId, onCreated, onClose }: Props) {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
-    if (!filesKey) { setError("Not authenticated"); return; }
     setLoading(true);
     setError("");
     try {
-      const folderKey = await generateFolderKey();
-      const encryptedBodyB64 = await encryptFolderBody({ name: trimmed }, folderKey);
-      const wrapped = await wrapKey(folderKey, filesKey);
-      const wrappedFolderKeyB64 = toBase64(packWrappedKey(wrapped.data, wrapped.iv));
-      await gqlRequest(CREATE_FOLDER, { encryptedBodyB64, wrappedFolderKeyB64, parentFolderId });
+      await gqlRequest(CREATE_FOLDER, { name: trimmed, parentFolderId });
       onCreated();
       onClose();
     } catch (err) {

@@ -87,6 +87,7 @@ export async function accessShare(
     previewBlobId: share.allowPreview ? share.file.previewBlobId : null,
     thumbnailBlobId: share.allowPreview ? share.file.thumbnailBlobId : null,
     posterBlobId: share.allowPreview ? share.file.posterBlobId : null,
+    chunkCount: share.file.chunkCount,
     allowContent: share.allowContent,
     allowPreview: share.allowPreview,
   };

@@ -1,4 +1,7 @@
-// ddrive v4 — Auth store (Zustand)
+// ddrive — Auth store (Zustand)
+//
+// Post-E2EE-removal: a session is just a JWT + user record. No client-held
+// crypto keys (no ARK, no filesKey) — see docs/hermes/concept.md.
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -12,11 +15,8 @@ export interface PersistedUser {
 interface AuthState {
   token: string | null;
   user: PersistedUser | null;
-  ark: CryptoKey | null;
-  filesKey: CryptoKey | null;
 
-  setAuth: (token: string, user: PersistedUser, ark?: CryptoKey | null, filesKey?: CryptoKey | null) => void;
-  setKeys: (ark: CryptoKey, filesKey: CryptoKey) => void;
+  setAuth: (token: string, user: PersistedUser) => void;
   setUser: (user: PersistedUser) => void;
   logout: () => void;
 }
@@ -26,13 +26,10 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       token: null,
       user: null,
-      ark: null,
-      filesKey: null,
 
-      setAuth: (token, user, ark, filesKey) => set({ token, user, ark: ark ?? null, filesKey: filesKey ?? null }),
-      setKeys: (ark, filesKey) => set({ ark, filesKey }),
+      setAuth: (token, user) => set({ token, user }),
       setUser: (user) => set({ user }),
-      logout: () => set({ token: null, user: null, ark: null, filesKey: null }),
+      logout: () => set({ token: null, user: null }),
     }),
     {
       name: "ddv4-auth",

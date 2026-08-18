@@ -1,39 +1,18 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { gqlRequest } from "../lib/graphql.js";
-import { registerCrypto } from "../lib/crypto.js";
 import { useAuthStore } from "../stores/auth.js";
 import { AuthCard, authInputClass, authLabelClass, authPrimaryButtonClass } from "../components/layout/AuthCard.js";
 import type { LoginResponse } from "@ddv4/types/api";
 
 const REGISTER_MUTATION = `
-  mutation Register(
-    $email: String!
-    $username: String!
-    $wrappedARKByPassword: String!
-    $wrappedARKByRecovery: String!
-    $argon2Params: Argon2ParamsInput!
-    $serverAuthProof: String!
-  ) {
-    register(
-      email: $email
-      username: $username
-      wrappedARKByPassword: $wrappedARKByPassword
-      wrappedARKByRecovery: $wrappedARKByRecovery
-      argon2Params: $argon2Params
-      serverAuthProof: $serverAuthProof
-    ) {
+  mutation Register($email: String!, $username: String!, $password: String!) {
+    register(email: $email, username: $username, password: $password) {
       token
       user {
         id
         email
         username
-        crypto {
-          wrappedARKByPassword
-          wrappedARKByRecovery
-          argon2Params { memoryKB iterations parallelism saltB64 }
-          lastPasswordChangeAt
-        }
       }
     }
   }
@@ -66,18 +45,13 @@ export function Register() {
     setLoading(true);
 
     try {
-      const crypto = await registerCrypto(password);
-
       const { register } = await gqlRequest<{ register: LoginResponse }>(REGISTER_MUTATION, {
         email,
         username,
-        wrappedARKByPassword: crypto.wrappedARKByPassword,
-        wrappedARKByRecovery: crypto.wrappedARKByRecovery,
-        argon2Params: crypto.argon2Params,
-        serverAuthProof: crypto.serverAuthProof,
+        password,
       });
 
-      setAuth(register.token, register.user, crypto.ark, crypto.filesKey);
+      setAuth(register.token, register.user);
       navigate("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");

@@ -1,14 +1,12 @@
 import { useState } from "react";
 import { Pencil, X } from "lucide-react";
 import { gqlRequest } from "../../lib/graphql.js";
-import { useAuthStore } from "../../stores/auth.js";
-import { unwrapFolderKey, encryptFolderBody } from "../../lib/crypto.js";
 import type { FolderItem } from "./FileTable.js";
 import { authInputClass } from "../layout/AuthCard.js";
 
 const RENAME_FOLDER = `
-  mutation RenameFolder($folderId: ID!, $encryptedBodyB64: String!) {
-    renameFolder(folderId: $folderId, encryptedBodyB64: $encryptedBodyB64)
+  mutation RenameFolder($folderId: ID!, $name: String!) {
+    renameFolder(folderId: $folderId, name: $name)
   }
 `;
 
@@ -19,7 +17,6 @@ interface Props {
 }
 
 export function RenameFolderModal({ folder, onRenamed, onClose }: Props) {
-  const filesKey = useAuthStore((s) => s.filesKey);
   const [name, setName] = useState(folder.name);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -28,13 +25,10 @@ export function RenameFolderModal({ folder, onRenamed, onClose }: Props) {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed || trimmed === folder.name) { onClose(); return; }
-    if (!filesKey || !folder.wrappedFolderKey) { setError("Missing key material"); return; }
     setLoading(true);
     setError("");
     try {
-      const folderKey = await unwrapFolderKey(folder.wrappedFolderKey, filesKey);
-      const encryptedBodyB64 = await encryptFolderBody({ name: trimmed }, folderKey);
-      await gqlRequest(RENAME_FOLDER, { folderId: folder.id, encryptedBodyB64 });
+      await gqlRequest(RENAME_FOLDER, { folderId: folder.id, name: trimmed });
       onRenamed();
       onClose();
     } catch (err) {

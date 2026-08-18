@@ -4,7 +4,6 @@ import { useParams } from "react-router";
 import { FolderPlus, UploadCloud } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { gqlRequest } from "../lib/graphql.js";
-import { unwrapRootFek, decryptMeta, unwrapFolderKey, decryptFolderBody } from "../lib/crypto.js";
 import { uploadFile } from "../lib/upload.js";
 import { downloadFile, downloadFolderAsZip, DOWNLOAD_SUCCESS_EVENT } from "../lib/download.js";
 import { createOwnerPreview, revokePreview, type PreviewResult } from "../lib/preview.js";
@@ -19,7 +18,6 @@ import { ShareModal } from "../components/files/ShareModal.js";
 import { NewFolderModal } from "../components/files/NewFolderModal.js";
 import { RenameFolderModal } from "../components/files/RenameFolderModal.js";
 import { useNotificationStore } from "../stores/notifications.js";
-import { useAuthStore } from "../stores/auth.js";
 import { ImagePreview } from "../components/media/ImagePreview.js";
 
 const DELETE_FILE_MUTATION = `
@@ -50,20 +48,18 @@ const FILES_QUERY = `
   query Files($parentFolderId: ID) {
     files(parentFolderId: $parentFolderId) {
       id
-      encryptedName
-      encryptedMimeType
+      name
+      mimeType
       primaryManifestBlobId
-      wrappedFEK
       status
-      totalCiphertextBytes
+      totalBytes
       chunkCount
       createdAt
       updatedAt
     }
     folders(parentFolderId: $parentFolderId) {
       id
-      encryptedBody
-      wrappedFolderKey
+      name
       itemCount
       totalSizeBytes
       createdAt
@@ -75,17 +71,12 @@ const FILES_QUERY = `
 export function Dashboard() {
   const { folderId } = useParams<{ folderId?: string }>();
   const queryClient = useQueryClient();
-  const filesKey = useAuthStore((s) => s.filesKey);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploads = useUploadStore((s) => s.uploads);
   const addDownload = useDownloadStore((s) => s.addDownload);
   const updateDownload = useDownloadStore((s) => s.updateDownload);
   const pushNotification = useNotificationStore((s) => s.push);
-  const [sharingFile, setSharingFile] = useState<{
-    id: string;
-    name: string;
-    wrappedFEK?: string;
-  } | null>(null);
+  const [sharingFile, setSharingFile] = useState<{ id: string; name: string } | null>(null);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<FolderItem | null>(null);
   const [zipProgress, setZipProgress] = useState<string | null>(null);
@@ -106,11 +97,6 @@ export function Dashboard() {
     id: string;
     name: string;
     mimeType: string;
-    size: string;
-    chunkSize: number;
-    chunkCount: number;
-    wrappedFEK: string;
-    manifestBlobId: string;
   } | null>(null);
   const [imagePreview, setImagePreview] = useState<PreviewResult | null>(null);
 
@@ -120,20 +106,18 @@ export function Dashboard() {
       const result = await gqlRequest<{
         files: Array<{
           id: string;
-          encryptedName: string | null;
-          encryptedMimeType: string | null;
+          name: string | null;
+          mimeType: string | null;
           primaryManifestBlobId: string | null;
-          wrappedFEK: string;
           status: string;
-          totalCiphertextBytes: string;
+          totalBytes: string;
           chunkCount: number;
           createdAt: string;
           updatedAt: string;
         }>;
         folders: Array<{
           id: string;
-          encryptedBody: string;
-          wrappedFolderKey: string;
+          name: string;
           itemCount: number;
           totalSizeBytes: string;
           createdAt: string;
@@ -141,54 +125,30 @@ export function Dashboard() {
         }>;
       }>(FILES_QUERY, { parentFolderId: folderId ?? null });
 
-      const [files, folders] = await Promise.all([
-        Promise.all(
-          result.files.filter((f) => f.status === "READY").map(async (file) => {
-            let name = file.id;
-            let mimeType = "application/octet-stream";
-            try {
-              const fek = await unwrapRootFek(filesKey!, file.wrappedFEK);
-              if (file.encryptedName) name = await decryptMeta(fek, file.encryptedName);
-              if (file.encryptedMimeType) mimeType = await decryptMeta(fek, file.encryptedMimeType);
-            } catch { /* show id as fallback if decrypt fails */ }
-            return {
-              id: file.id,
-              name,
-              mimeType,
-              size: file.totalCiphertextBytes,
-              chunkSize: file.chunkCount > 0 ? Math.ceil(Number(file.totalCiphertextBytes) / file.chunkCount) : 0,
-              chunkCount: file.chunkCount,
-              status: file.status,
-              createdAt: file.createdAt,
-              wrappedFEK: file.wrappedFEK,
-              manifestBlobId: file.primaryManifestBlobId ?? "",
-            };
-          }),
-        ),
-        Promise.all(
-          result.folders.map(async (folder) => {
-            let name = folder.id;
-            try {
-              const folderKey = await unwrapFolderKey(folder.wrappedFolderKey, filesKey!);
-              const body = await decryptFolderBody(folder.encryptedBody, folderKey);
-              name = body.name;
-            } catch { /* fallback */ }
-            return {
-              id: folder.id,
-              name,
-              fileCount: folder.itemCount,
-              subfolderCount: 0,
-              totalSizeBytes: folder.totalSizeBytes,
-              wrappedFolderKey: folder.wrappedFolderKey,
-              encryptedBody: folder.encryptedBody,
-            };
-          }),
-        ),
-      ]);
+      const files = result.files
+        .filter((f) => f.status === "READY")
+        .map((file) => ({
+          id: file.id,
+          name: file.name ?? file.id,
+          mimeType: file.mimeType ?? "application/octet-stream",
+          size: file.totalBytes,
+          chunkSize: file.chunkCount > 0 ? Math.ceil(Number(file.totalBytes) / file.chunkCount) : 0,
+          chunkCount: file.chunkCount,
+          status: file.status,
+          createdAt: file.createdAt,
+          manifestBlobId: file.primaryManifestBlobId ?? "",
+        }));
+
+      const folders = result.folders.map((folder) => ({
+        id: folder.id,
+        name: folder.name,
+        fileCount: folder.itemCount,
+        subfolderCount: 0,
+        totalSizeBytes: folder.totalSizeBytes,
+      }));
 
       return { files, folders };
     },
-    enabled: Boolean(filesKey),
   });
 
   const uiFiles = data?.files ?? [];
@@ -217,7 +177,6 @@ export function Dashboard() {
     name: string;
     mimeType: string;
     manifestBlobId?: string;
-    wrappedFEK?: string;
     chunkCount?: number;
     size?: string;
   }) => {
@@ -235,7 +194,6 @@ export function Dashboard() {
         fileName: file.name,
         mimeType: file.mimeType,
         manifestBlobId: file.manifestBlobId ?? "",
-        wrappedFEK: file.wrappedFEK ?? "",
       });
 
       updateDownload(file.id, {
@@ -256,14 +214,12 @@ export function Dashboard() {
     name: string;
     mimeType: string;
     manifestBlobId?: string;
-    wrappedFEK?: string;
   }) => {
     try {
       const nextPreview = await createOwnerPreview({
         fileName: file.name,
         mimeType: file.mimeType,
         manifestBlobId: file.manifestBlobId ?? "",
-        wrappedFEK: file.wrappedFEK ?? "",
       });
       setImagePreview((current) => {
         revokePreview(current);
@@ -331,17 +287,8 @@ export function Dashboard() {
     id: string;
     name: string;
     mimeType: string;
-    size: string;
-    chunkSize: number;
-    chunkCount: number;
-    wrappedFEK?: string;
-    manifestBlobId?: string;
   }) => {
-    setPlayingFile({
-      ...file,
-      wrappedFEK: file.wrappedFEK ?? "",
-      manifestBlobId: file.manifestBlobId ?? "",
-    });
+    setPlayingFile(file);
   }, []);
 
   const isOsFileDrag = (e: React.DragEvent) => e.dataTransfer.types.includes("Files");
@@ -471,7 +418,7 @@ export function Dashboard() {
           onPreview={handlePreview}
           onPlay={handlePlay}
           onDelete={handleDelete}
-          onShare={(file) => setSharingFile({ id: file.id, name: file.name, wrappedFEK: file.wrappedFEK })}
+          onShare={(file) => setSharingFile({ id: file.id, name: file.name })}
           onDownloadFolder={handleDownloadFolder}
           onRenameFolder={(folder) => setRenamingFolder(folder)}
           onDeleteFolder={handleDeleteFolder}
@@ -510,11 +457,6 @@ export function Dashboard() {
             fileId: playingFile.id,
             fileName: playingFile.name,
             mimeType: playingFile.mimeType,
-            size: playingFile.size,
-            chunkSize: playingFile.chunkSize,
-            chunkCount: playingFile.chunkCount,
-            wrappedFEK: playingFile.wrappedFEK,
-            manifestBlobId: playingFile.manifestBlobId,
           }}
           onClose={() => setPlayingFile(null)}
         />
