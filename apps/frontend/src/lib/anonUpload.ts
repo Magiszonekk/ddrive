@@ -1,11 +1,14 @@
 // ddrive — Anonymous upload pipeline (Phase 6)
 //
 // Same chunking approach as the authenticated uploadFile, but talks to the
-// no-auth GraphQL mutations + /api/anon-blob/ endpoint. Simpler than
-// upload.ts on purpose — no resume/retry sophistication, this is for casual
-// "drop a file, get a link" use. See docs/hermes/concept.md section 4.7.
+// no-auth GraphQL mutations + /api/anon-blob/ endpoint. No resume/retry
+// sophistication (this is for casual "drop a file, get a link" use), but
+// DOES upload chunks concurrently — a worker pool pulls from a shared
+// streaming iterator, same pattern as upload.ts. See
+// docs/hermes/concept.md section 4.7.
 
 import { chunkFileStream } from "@ddv4/processing";
+import { config } from "@ddv4/config";
 import { gqlRequest } from "./graphql.js";
 import { uploadAnonymousBlobToApi } from "./api.js";
 import { LEGACY_UPLOAD_CHUNK_SIZE_BYTES } from "./upload-constants.js";
@@ -59,10 +62,34 @@ export async function uploadAnonymousFile(
   );
   const fileId = initAnonymousUpload.fileId;
 
-  const uploadedBlobs: UploadedBlobTransportInput[] = [];
+  // Chunks uploaded so far, keyed by index — a Map (not an array push) so
+  // concurrent workers landing out of order still assemble correctly.
+  const uploadedBlobs = new Map<number, UploadedBlobTransportInput>();
   let uploadedBytes = 0;
 
-  for await (const chunk of chunkFileStream(file, LEGACY_UPLOAD_CHUNK_SIZE_BYTES)) {
+  const CONCURRENCY = Math.min(config.defaultUploadConcurrency, chunkCount);
+
+  // Workers share one streaming iterator through a mutex, same pattern as
+  // upload.ts — chunkFileStream reads the file incrementally so nothing
+  // requires the whole file to be buffered in memory up front.
+  const chunkIter = chunkFileStream(file, LEGACY_UPLOAD_CHUNK_SIZE_BYTES)[Symbol.asyncIterator]();
+  let iterLocked = false;
+  const iterWaiters: Array<() => void> = [];
+  const nextChunk = async (): Promise<{ index: number; data: Uint8Array } | null> => {
+    while (iterLocked) {
+      await new Promise<void>((resolve) => iterWaiters.push(resolve));
+    }
+    iterLocked = true;
+    try {
+      const result = await chunkIter.next();
+      return result.done ? null : result.value;
+    } finally {
+      iterLocked = false;
+      iterWaiters.shift()?.();
+    }
+  };
+
+  const uploadOneChunk = async (chunk: { index: number; data: Uint8Array }) => {
     const blobId = `${fileId}:chunk:${chunk.index}`;
     const buffer = chunk.data.buffer.slice(chunk.data.byteOffset, chunk.data.byteOffset + chunk.data.byteLength) as ArrayBuffer;
     const result = await uploadAnonymousBlobToApi(blobId, buffer, {
@@ -70,7 +97,7 @@ export async function uploadAnonymousFile(
       "X-Chunk-Index": String(chunk.index),
       "X-Chunk-Count": String(chunkCount),
     });
-    uploadedBlobs.push({
+    uploadedBlobs.set(chunk.index, {
       blobId: result.blobId,
       sizeBytes: result.sizeBytes,
       contentHash: result.contentHash,
@@ -82,15 +109,26 @@ export async function uploadAnonymousFile(
     });
     uploadedBytes += chunk.data.byteLength;
     onProgress?.(uploadedBytes, file.size);
-  }
+  };
 
+  const worker = async () => {
+    while (true) {
+      const chunk = await nextChunk();
+      if (!chunk) break;
+      await uploadOneChunk(chunk);
+    }
+  };
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+
+  const orderedBlobs = Array.from({ length: chunkCount }, (_, i) => uploadedBlobs.get(i)!);
   const manifestBlobId = `${fileId}:chunk:${chunkCount - 1}`;
   await gqlRequest(COMMIT_ANON_MANIFEST, {
     fileId,
     manifestBlobId,
     totalBytes: String(file.size),
     chunkCount,
-    blobs: uploadedBlobs,
+    blobs: orderedBlobs,
   });
 
   // Anonymous uploads are only reachable through a share link — there's no
