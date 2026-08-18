@@ -46,6 +46,39 @@ export async function revokeShare(ownerUserId: string, shareId: string): Promise
   return true;
 }
 
+/**
+ * Share creation for anonymous uploads (Phase 6) — no ownerUserId check
+ * since the file is owned by the system user, not a real account. Callable
+ * without auth; the only gate is that the target file is actually
+ * isAnonymous, so this can't be used to mint shares for someone else's
+ * private files.
+ */
+export async function createAnonymousShare(
+  fileId: string,
+  allowContent: boolean,
+  allowPreview: boolean,
+): Promise<{ shareId: string; token: string }> {
+  const file = await db.file.findFirst({
+    where: { id: fileId, isAnonymous: true, deletedAt: null, status: "READY" },
+  });
+  if (!file) throw new Error("File not found, not anonymous, or not ready");
+
+  const token = randomBytes(32).toString("base64url");
+
+  const share = await db.share.create({
+    data: {
+      ownerUserId: file.ownerUserId,
+      fileId,
+      shareType: "FILE",
+      tokenHash: hashToken(token),
+      allowContent,
+      allowPreview,
+    },
+  });
+
+  return { shareId: share.shareId, token };
+}
+
 export async function getShares(ownerUserId: string, fileId: string) {
   return db.share.findMany({
     where: { ownerUserId, fileId },

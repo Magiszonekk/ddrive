@@ -29,7 +29,7 @@ const COMMIT_ANON_MANIFEST = `
 
 const CREATE_SHARE_FOR_ANON = `
   mutation CreateShareForAnon($fileId: ID!, $allowContent: Boolean!, $allowPreview: Boolean) {
-    createShare(fileId: $fileId, allowContent: $allowContent, allowPreview: $allowPreview) {
+    createAnonymousShare(fileId: $fileId, allowContent: $allowContent, allowPreview: $allowPreview) {
       shareId token
     }
   }
@@ -96,11 +96,11 @@ export async function uploadAnonymousFile(
   // Anonymous uploads are only reachable through a share link — there's no
   // "my files" view without an account — so we mint one immediately.
   const isPreviewable = /^(image|video|audio)\//.test(file.type);
-  const { createShare } = await gqlRequest<{ createShare: { shareId: string; token: string } }>(
+  const { createAnonymousShare } = await gqlRequest<{ createAnonymousShare: { shareId: string; token: string } }>(
     CREATE_SHARE_FOR_ANON,
     { fileId, allowContent: true, allowPreview: isPreviewable },
   );
 
-  const shareUrl = `${window.location.origin}/s/${createShare.shareId}?t=${createShare.token}`;
+  const shareUrl = `${window.location.origin}/s/${createAnonymousShare.shareId}?t=${createAnonymousShare.token}`;
   return { fileId, shareUrl };
 }
