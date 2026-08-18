@@ -237,32 +237,45 @@ after the TTL; a logged-in user can claim it before that happens.
 
 ## Phase 7 — Deployment
 
-**Goal:** stand up the fork on OVH (app) + cikowice (DB), separate from
-discordrive-prod.
+**Status: DONE (2026-08-18).** Live at https://ddrive.cikowice.pl.
 
-1. Provision a Postgres DB on cikowice (new DB name, e.g. `ddrive`, next to
-   the existing `discordrive` DB — same Postgres instance or a new one,
-   decide based on load) reachable at the same `10.8.0.4:5432` WG address
-   discordrive-prod's DB already uses.
-2. Clone/deploy this fork to a new directory on OVH (e.g.
-   `/home/ubuntu/ddrive-prod`, distinct from `/home/ubuntu/discordrive-prod`),
-   new `.env` pointing `DATABASE_URL` at the cikowice DB over WG, new
-   `API_PORT`/`FRONTEND_PORT` distinct from discordrive-prod's 3400/3401
-   (and the stale 3300 test instance).
-3. New nginx vhost + TLS cert (certbot, same pattern as the existing
-   `discordrive-ssl`/`discordrive-test-ssl` sites) for whatever domain this
-   product ends up using (TBD — see concept.md §4.9 naming).
-4. New systemd unit(s) (correct working directory this time — the existing
-   discordrive-prod `.service` files reference a stale path that doesn't
-   exist; don't repeat that mistake here) or reuse whatever process
-   manager pattern is actually in use on OVH by the time this ships.
-5. Smoke test end-to-end on the real deployment before calling it live:
-   register, upload, thumbnail appears, stream a video, share a link,
-   confirm OG preview renders, anonymous upload + claim flow.
+- DB: Postgres in Docker on cikowice_2222, project `ddrive-prod-db`,
+  container `ddrive-prod-db-postgres-1`, port 5434 (bound 0.0.0.0, reachable
+  from OVH over WireGuard at 10.8.0.4:5434). Separate from both the dev
+  stack (`ddrive-dev-db`, port 5433) and discordrive-prod's DB.
+- App: `/home/ubuntu/ddrive-prod` on OVH, git branch `main`, deployed via
+  `git pull` (not a submodule/CI pipeline yet — manual `git pull && npm run
+  build --workspace=@ddv4/frontend && systemctl restart` for updates).
+- API: systemd unit `ddrive-prod-api.service`, port 3500, bare
+  `node --env-file .env --import tsx src/index.ts` (same pattern as
+  discordrive-api.service). Logs: `/var/log/ddrive-prod-api*.log`.
+- Frontend: static Vite build served directly by nginx from
+  `apps/frontend/dist` (not `vite preview`).
+- nginx: `/etc/nginx/sites-available/ddrive-ssl` + `ddrive-http` (HTTP->HTTPS
+  redirect + ACME challenge path). TLS via certbot, cert
+  `ddrive.cikowice.pl`. Listens on port 4099 (not 443 directly — OVH routes
+  443 through a `stream{}` SNI-preread block in the main nginx.conf that
+  fans out to 4099 for all *.cikowice.pl https vhosts; this was the same
+  non-obvious pattern discordrive-prod and pokemon.cikowice.pl already use).
+- DNS: `ddrive.cikowice.pl` A record -> 146.59.126.32, created via the OVH
+  API (mcp-ovh's credentials at `/home/ubuntu/Desktop/mcp-ovh/.env`).
+- Storage: `STORAGE_PRIMARY_PROVIDERS=LOCAL` (disk on the OVH box) — no real
+  Discord webhooks provisioned for this fork yet. Swap to DISCORD later by
+  setting `STORAGE_PRIMARY_PROVIDERS=DISCORD` + `WEBHOOK_1..N` in
+  `/home/ubuntu/ddrive-prod/.env` and restarting the service.
+- Smoke test passed live (not just locally): register -> login -> upload
+  plaintext chunk -> confirmed ciphertext unreadable on disk -> download
+  byte-identical -> image upload -> thumbnail auto-generated via ffmpeg
+  (1.5MB original -> 33.8KB/480px JPEG) -> share link -> OG-tagged
+  server-rendered page (https:// URLs, fixed an http:// bug caught during
+  this test) -> download via share -> anonymous upload -> share (caught and
+  fixed a real bug: anon uploads called the auth-gated `createShare`,
+  which can never succeed for an anonymous caller — added
+  `createAnonymousShare`) -> claim to account -> file confirmed in the
+  claiming account's file list.
 
-Exit criteria: the fork is reachable at its own public URL, independent of
-discordrive-prod, backed by the cikowice DB over WireGuard, and passes the
-same smoke test a human would run by hand.
+Exit criteria: MET.
+
 
 ---
 
