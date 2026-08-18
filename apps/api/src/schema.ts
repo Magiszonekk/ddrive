@@ -116,6 +116,16 @@ export function buildSchema() {
         updatedAt: DateTime!
       }
 
+      type AnonymousFile {
+        id: ID!
+        name: String
+        mimeType: String
+        totalBytes: String!
+        status: String!
+        expiresAt: DateTime
+        createdAt: DateTime!
+      }
+
       type ShareAccess {
         shareId: ID!
         fileId: ID!
@@ -242,6 +252,7 @@ export function buildSchema() {
         shares(fileId: ID!): [ShareInfo!]!
         storageUsage: StorageUsage!
         accessShare(shareId: ID!, token: String!): ShareAccess
+        myAnonymousUploads(anonSessionId: String!): [AnonymousFile!]!
         filesForHealthCheck(samplePercent: Float, fileId: ID): [HealthCheckFile!]!
         replicationStatus: ReplicationStatus!
       }
@@ -278,6 +289,22 @@ export function buildSchema() {
           chunkCount: Int!
         ): InitUploadResult!
 
+        initAnonymousUpload(
+          name: String
+          mimeType: String
+          totalBytes: String!
+          chunkCount: Int!
+          anonSessionId: String
+        ): InitUploadResult!
+
+        commitAnonymousManifest(
+          fileId: ID!
+          manifestBlobId: String!
+          totalBytes: String!
+          chunkCount: Int!
+          blobs: [UploadedBlobTransportInput!]!
+        ): CommitManifestResult!
+
         setFilePreview(fileId: ID!, previewBlobId: String!): Boolean!
 
         commitManifest(
@@ -308,6 +335,8 @@ export function buildSchema() {
         ): ShareCreateResult!
 
         revokeShare(shareId: ID!): Boolean!
+        reportShare(shareId: ID!, reason: String!, note: String): Boolean!
+        claimShare(shareId: ID!, token: String!): Boolean!
         updateChunkHealthBatch(updates: [ChunkHealthUpdateInput!]!): Boolean!
         runHealthCheck(mode: String!, samplePercent: Float, fileId: ID): HealthCheckSummary!
       }
@@ -390,6 +419,10 @@ export function buildSchema() {
           enforceRateLimit(ctx.ip, "auth");
           return sharingResolvers.accessShare(args.shareId, args.token);
         },
+        myAnonymousUploads: async (_parent: unknown, args: { anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return fileResolvers.getAnonymousUploadsBySession(args.anonSessionId);
+        },
       },
       Mutation: {
         register: async (_parent: unknown, args: {
@@ -448,6 +481,35 @@ export function buildSchema() {
         }, ctx: Context) => {
           const auth = requireAuth(ctx);
           return fileResolvers.initUpload(auth.userId, args);
+        },
+        initAnonymousUpload: async (_parent: unknown, args: {
+          name?: string;
+          mimeType?: string;
+          totalBytes: string;
+          chunkCount: number;
+          anonSessionId?: string;
+        }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return fileResolvers.initAnonymousUpload(args, args.anonSessionId ?? null);
+        },
+        commitAnonymousManifest: async (_parent: unknown, args: {
+          fileId: string;
+          manifestBlobId: string;
+          totalBytes: string;
+          chunkCount: number;
+          blobs: Array<{
+            blobId: string;
+            storageKind: "LOCAL" | "DISCORD" | "TELEGRAM";
+            storagePath: string;
+            sizeBytes: string;
+            contentHash?: string;
+            discordMessageId?: string;
+            discordChannelId?: string;
+            webhookId?: string;
+          }>;
+        }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return fileResolvers.commitAnonymousManifest(args.fileId, args.manifestBlobId, args.totalBytes, args.chunkCount, args.blobs);
         },
         commitManifest: async (_parent: unknown, args: {
           fileId: string;
@@ -532,6 +594,14 @@ export function buildSchema() {
         revokeShare: async (_parent: unknown, args: { shareId: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
           return sharingResolvers.revokeShare(auth.userId, args.shareId);
+        },
+        reportShare: async (_parent: unknown, args: { shareId: string; reason: string; note?: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return sharingResolvers.reportShare(args.shareId, args.reason, args.note ?? null, ctx.ip);
+        },
+        claimShare: async (_parent: unknown, args: { shareId: string; token: string }, ctx: Context) => {
+          const auth = requireAuth(ctx);
+          return sharingResolvers.claimShare(auth.userId, args.shareId, args.token);
         },
       },
     }, ...pluginResolvers),

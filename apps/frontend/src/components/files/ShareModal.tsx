@@ -116,7 +116,7 @@ export function ShareModal({ file, onClose }: Props) {
         maxViews: maxViews ? Number(maxViews) : null,
       });
 
-      const url = `${window.location.origin}/share/${createShare.shareId}#${createShare.token}`;
+      const url = `${window.location.origin}/s/${createShare.shareId}?t=${createShare.token}`;
       setShareUrl(url);
       await loadShares();
     } catch (err) {

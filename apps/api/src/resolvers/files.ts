@@ -6,6 +6,9 @@ import { db } from "@ddv4/database";
 import { downloadChunk, getChunkUrl, parseWebhookUrls, WebhookRateLimiter, type WebhookInfo, downloadChunkBot, getChunkUrlBot, type BotInfo } from "@ddv4/discord-client";
 import { getPoolFor, placementFromBlobRecord, placementFromRow, type PlacementRow, type PoolRole } from "../storage/provider.js";
 import { getConfiguredReplicaKinds } from "../storage/replica-pools.js";
+import { generateThumbnailForFile } from "../storage/thumbnail.js";
+import { getSystemUserId } from "../middleware/auth.js";
+import { config } from "@ddv4/config";
 import type { InitUploadRequest, UploadedBlobTransportInput } from "@ddv4/types/api";
 import { pluginRegistry } from "../plugin-registry.js";
 
@@ -27,6 +30,79 @@ export async function initUpload(
   });
 
   return { fileId: file.id, status: "uploading" };
+}
+
+// === Anonymous uploads (Phase 6) ===
+//
+// Owned by the stable system user (getSystemUserId) so every ownerUserId-
+// scoped query above (deleteFile, moveFile, getUploadStatus, ...) keeps
+// working unmodified once a file is claimed. isAnonymous + anonSessionId +
+// expiresAt are the only new bits of state. See docs/hermes/concept.md 4.7.
+
+export async function initAnonymousUpload(
+  input: InitUploadRequest,
+  anonSessionId: string | null,
+): Promise<{ fileId: string; status: "uploading" }> {
+  const systemUserId = await getSystemUserId();
+  const expiresAt = new Date(Date.now() + config.anonymousTTLDays * 86_400_000);
+
+  const file = await db.file.create({
+    data: {
+      ownerUserId: systemUserId,
+      parentFolderId: null, // anonymous uploads never nest into a real user's folder tree
+      name: input.name ?? null,
+      mimeType: input.mimeType ?? null,
+      primaryManifestBlobId: null,
+      status: "UPLOADING",
+      totalBytes: BigInt(input.totalBytes),
+      chunkCount: input.chunkCount,
+      isAnonymous: true,
+      anonSessionId,
+      expiresAt,
+    },
+  });
+
+  return { fileId: file.id, status: "uploading" };
+}
+
+export async function commitAnonymousManifest(
+  fileId: string,
+  manifestBlobId: string,
+  totalBytes: string,
+  chunkCount: number,
+  blobs: UploadedBlobTransportInput[],
+): Promise<{ success: boolean }> {
+  const systemUserId = await getSystemUserId();
+  return commitManifest(systemUserId, fileId, manifestBlobId, totalBytes, chunkCount, blobs);
+}
+
+/** Files an anonymous browser session has uploaded — localStorage UUID, convenience only, not auth. */
+export async function getAnonymousUploadsBySession(anonSessionId: string) {
+  const systemUserId = await getSystemUserId();
+  return db.file.findMany({
+    where: { ownerUserId: systemUserId, anonSessionId, deletedAt: null, status: "READY" },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+/** Permanently removes anonymous files past their TTL. Run on a timer, see index.ts. */
+export async function purgeExpiredAnonymousFiles(): Promise<number> {
+  const files = await db.file.findMany({
+    where: { isAnonymous: true, expiresAt: { lt: new Date() }, deletedAt: null },
+  });
+  let purged = 0;
+  for (const file of files) {
+    try {
+      await purgeFileRecord({ id: file.id, ownerUserId: file.ownerUserId, previewBlobId: file.previewBlobId });
+      purged++;
+    } catch (error) {
+      console.warn(JSON.stringify({
+        ts: new Date().toISOString(), scope: "anon-ttl-sweep", type: "purge_failed",
+        fileId: file.id, error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+  return purged;
 }
 
 export async function setFilePreview(
@@ -128,6 +204,15 @@ export async function commitManifest(
     mimeType: file.mimeType ?? "application/octet-stream",
     size: BigInt(totalBytes),
     sha256: manifestBlobId,
+  });
+
+  // Fire-and-forget: thumbnail generation runs off the request path so
+  // commitManifest returns immediately. Failures are logged, not thrown.
+  void generateThumbnailForFile(fileId).catch((error) => {
+    console.warn(JSON.stringify({
+      ts: new Date().toISOString(), scope: "files", type: "thumbnail_kickoff_failed",
+      fileId, error: error instanceof Error ? error.message : String(error),
+    }));
   });
 
   return { success: true };

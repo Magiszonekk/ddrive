@@ -35,6 +35,16 @@ export const config = {
 
   // Misc
   anonymousTTLDays: 30,
+
+  // Thumbnails (Phase 2, non-E2EE fork) — skip generating a thumbnail when
+  // the original is already small/lowres; the original doubles as its own
+  // preview in that case. See docs/hermes/concept.md section 4.3.
+  thumbnail: {
+    maxDimension: 480, // px, longest edge
+    skipImageBelowBytes: 200 * 1024, // 200 KB
+    skipVideoBelowBytes: 2 * 1024 * 1024, // 2 MB
+    videoFrameAtFraction: 0.1, // grab a frame ~10% into the video
+  },
 } as const;
 
 export type { AppMode };

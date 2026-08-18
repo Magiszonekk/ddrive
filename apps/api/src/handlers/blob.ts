@@ -251,6 +251,33 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
   const { auth, response } = await authOrResponse(req);
   if (!auth) return response;
 
+  return handleBlobUploadAs(req, params, auth.userId);
+}
+
+/**
+ * Anonymous blob upload (Phase 6). No session/API key — the caller proves
+ * nothing except that they know the fileId, which initAnonymousUpload just
+ * handed them. Ownership is the stable system user; the file itself carries
+ * isAnonymous+expiresAt so a TTL sweep reclaims it if never claimed. See
+ * docs/hermes/concept.md section 4.7 and resolvers/files.ts.
+ */
+export async function handleAnonymousBlobUpload(req: Request, params: { blobId: string }): Promise<Response> {
+  const fileId = params.blobId.split(":chunk:")[0];
+  if (!fileId) return Response.json({ error: "Invalid blob id" }, { status: 400 });
+
+  const file = await db.file.findUnique({ where: { id: fileId } });
+  if (!file || !file.isAnonymous || file.status !== "UPLOADING") {
+    return Response.json({ error: "Anonymous upload not found or already finalized" }, { status: 404 });
+  }
+  if (file.expiresAt && file.expiresAt < new Date()) {
+    return Response.json({ error: "Upload session expired" }, { status: 410 });
+  }
+
+  return handleBlobUploadAs(req, params, file.ownerUserId);
+}
+
+async function handleBlobUploadAs(req: Request, params: { blobId: string }, ownerUserId: string): Promise<Response> {
+  const auth = { userId: ownerUserId, email: "" };
   const telemetry = parseUploadTelemetryHeaders(req);
   const requestId = makeUploadRequestId(params.blobId, telemetry);
   const requestStartMs = performance.now();

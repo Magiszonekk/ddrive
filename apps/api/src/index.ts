@@ -3,8 +3,9 @@
 import { createServer } from "node:http";
 import { createYoga } from "graphql-yoga";
 import { buildSchema, createContext } from "./schema.js";
-import { handleBlobContent, handleBlobContentForShare, handleBlobMetadata, handleBlobUpload } from "./handlers/blob.js";
+import { handleBlobContent, handleBlobContentForShare, handleBlobMetadata, handleBlobUpload, handleAnonymousBlobUpload } from "./handlers/blob.js";
 import { handleStreamRequest } from "./handlers/stream.js";
+import { handleSharePage, handleSharePageMedia, handleSharePagePoster, handleSharePageDownload } from "./handlers/share-page.js";
 import { checkRateLimit } from "./middleware/rate-limit.js";
 import { serverConfig } from "@ddv4/config/server";
 import { pluginRegistry } from "./plugin-registry.js";
@@ -25,7 +26,7 @@ async function handleRequest(req: Request): Promise<Response> {
       headers: {
         "Access-Control-Allow-Origin": serverConfig.frontendUrl,
         "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Upload-Id, X-Chunk-Index, X-Chunk-Count, X-Client-Timestamp, X-Share-Id, X-Share-Token",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Upload-Id, X-Chunk-Index, X-Chunk-Count, X-Client-Timestamp, X-Share-Id, X-Share-Token, X-Anon-Session-Id",
         "Access-Control-Max-Age": "86400",
       },
     });
@@ -92,9 +93,30 @@ async function handleRequest(req: Request): Promise<Response> {
     return handleBlobUpload(req, params as { blobId: string });
   }
 
+  // Anonymous upload (Phase 6) — no auth, gated purely on the fileId being a
+  // live UPLOADING isAnonymous row (created by initAnonymousUpload).
+  if (method === "PUT" && (params = matchRoute(pathname, "/api/anon-blob/:blobId"))) {
+    return handleAnonymousBlobUpload(req, params as { blobId: string });
+  }
+
   // Range-proxy streaming (video/audio) — server decrypts on demand, no SW.
   if (method === "GET" && (params = matchRoute(pathname, "/api/stream/:fileId"))) {
     return handleStreamRequest(req, params as { fileId: string });
+  }
+
+  // Server-rendered share page — real OG tags for unfurl bots, inline
+  // player/downloader for humans. Not part of the SPA build.
+  if (method === "GET" && (params = matchRoute(pathname, "/s/:shareId"))) {
+    return handleSharePage(req, params as { shareId: string });
+  }
+  if (method === "GET" && (params = matchRoute(pathname, "/s/:shareId/media"))) {
+    return handleSharePageMedia(req, params as { shareId: string });
+  }
+  if (method === "GET" && (params = matchRoute(pathname, "/s/:shareId/poster"))) {
+    return handleSharePagePoster(req, params as { shareId: string });
+  }
+  if (method === "GET" && (params = matchRoute(pathname, "/s/:shareId/download"))) {
+    return handleSharePageDownload(req, params as { shareId: string });
   }
 
   // Plugin routes: /api/plugin/:pluginName/...
@@ -150,6 +172,16 @@ const staleUploadSweep = () =>
     .catch((error) => console.error("Stale upload sweep failed:", error));
 staleUploadSweep();
 setInterval(staleUploadSweep, 60 * 60 * 1000).unref();
+
+// TTL sweep (Phase 6): permanently remove anonymous uploads never claimed
+// within their TTL window (config.anonymousTTLDays, default 30 days).
+import { purgeExpiredAnonymousFiles } from "./resolvers/files.js";
+const anonTtlSweep = () =>
+  purgeExpiredAnonymousFiles()
+    .then((purged) => { if (purged > 0) console.log(`Anonymous TTL sweep: purged ${purged} expired upload(s)`); })
+    .catch((error) => console.error("Anonymous TTL sweep failed:", error));
+anonTtlSweep();
+setInterval(anonTtlSweep, 60 * 60 * 1000).unref();
 
 // Create Magiszonek user if needed (fire-and-forget)
 import { createMagiszonekIfNeeded } from "@ddv4/database/seed/magiszonek";

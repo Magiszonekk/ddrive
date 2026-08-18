@@ -51,6 +51,7 @@ const FILES_QUERY = `
       name
       mimeType
       primaryManifestBlobId
+      thumbnailBlobId
       status
       totalBytes
       chunkCount
@@ -109,6 +110,7 @@ export function Dashboard() {
           name: string | null;
           mimeType: string | null;
           primaryManifestBlobId: string | null;
+          thumbnailBlobId: string | null;
           status: string;
           totalBytes: string;
           chunkCount: number;
@@ -134,6 +136,7 @@ export function Dashboard() {
           size: file.totalBytes,
           chunkSize: file.chunkCount > 0 ? Math.ceil(Number(file.totalBytes) / file.chunkCount) : 0,
           chunkCount: file.chunkCount,
+          thumbnailBlobId: file.thumbnailBlobId,
           status: file.status,
           createdAt: file.createdAt,
           manifestBlobId: file.primaryManifestBlobId ?? "",
