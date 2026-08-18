@@ -1,32 +1,25 @@
 import { useEffect, useState } from "react";
 import { Check, Copy, Link2, ShieldX, X } from "lucide-react";
 import { gqlRequest } from "../../lib/graphql.js";
-import { prepareShareLink, unwrapRootFek } from "../../lib/crypto.js";
-import { useAuthStore } from "../../stores/auth.js";
 import { authInputClass, authLabelClass, authPrimaryButtonClass } from "../layout/AuthCard.js";
 
 const CREATE_SHARE = `
   mutation CreateShare(
     $fileId: ID!
-    $capabilityToken: String!
-    $wrappedAKShare: String!
-    $wrappedFEK: String
     $allowContent: Boolean!
-    $allowMetadata: Boolean
+    $allowPreview: Boolean
     $expiresAt: String
     $maxViews: Int
   ) {
     createShare(
       fileId: $fileId
-      capabilityToken: $capabilityToken
-      wrappedAKShare: $wrappedAKShare
-      wrappedFEK: $wrappedFEK
       allowContent: $allowContent
-      allowMetadata: $allowMetadata
+      allowPreview: $allowPreview
       expiresAt: $expiresAt
       maxViews: $maxViews
     ) {
       shareId
+      token
     }
   }
 `;
@@ -54,7 +47,6 @@ interface Props {
   file: {
     id: string;
     name?: string;
-    wrappedFEK?: string;
   };
   onClose: () => void;
 }
@@ -86,7 +78,6 @@ function statusChipClass(label: string): string {
 }
 
 export function ShareModal({ file, onClose }: Props) {
-  const filesKey = useAuthStore((s) => s.filesKey);
   const [expiresAt, setExpiresAt] = useState("");
   const [maxViews, setMaxViews] = useState("");
   const [loading, setLoading] = useState(false);
@@ -109,34 +100,23 @@ export function ShareModal({ file, onClose }: Props) {
     }
   };
 
-  useEffect(() => {
-    loadShares();
-  }, [file.id]);
+  const loadSharesRef = loadShares;
+  useEffect(() => { void loadSharesRef(); }, [file.id]);
 
   const handleCreate = async () => {
     setLoading(true);
     setError("");
 
     try {
-      if (!filesKey || !file.wrappedFEK) {
-        throw new Error("Missing file key material for sharing");
-      }
-
-      const rootFek = await unwrapRootFek(filesKey, file.wrappedFEK);
-      const prepared = await prepareShareLink(rootFek, file.id);
-      const { createShare } = await gqlRequest<{ createShare: { shareId: string } }>(CREATE_SHARE, {
+      const { createShare } = await gqlRequest<{ createShare: { shareId: string; token: string } }>(CREATE_SHARE, {
         fileId: file.id,
-        capabilityToken: prepared.capabilityToken,
-        wrappedAKShare: prepared.wrappedAKShare,
-        wrappedFEK: prepared.wrappedFEK,
         allowContent: true,
-        // Web share links show the decrypted filename to the recipient
-        allowMetadata: true,
+        allowPreview: true,
         expiresAt: expiresAt || null,
         maxViews: maxViews ? Number(maxViews) : null,
       });
 
-      const url = `${window.location.origin}/share/${createShare.shareId}#${prepared.linkSecret}`;
+      const url = `${window.location.origin}/share/${createShare.shareId}#${createShare.token}`;
       setShareUrl(url);
       await loadShares();
     } catch (err) {
@@ -215,9 +195,7 @@ export function ShareModal({ file, onClose }: Props) {
             {shareUrl && (
               <div className="space-y-3 rounded-md border-l-2 border-success bg-success/5 p-4">
                 <p className="text-sm text-ink-2">
-                  Link created — copy it before closing. Full URL cannot be reconstructed later because the secret
-                  lives in the{" "}
-                  <code className="rounded-chip bg-paper-3 px-1 py-0.5 font-mono text-[0.8em] text-ink">#fragment</code>.
+                  Link created — copy it now, it won't be shown again.
                 </p>
                 <div className="flex gap-2">
                   <input

@@ -26,8 +26,6 @@ export interface FileItem {
   size: string;
   chunkSize: number;
   chunkCount: number;
-  wrappedFEK?: string;
-  manifestBlobId?: string;
   status: string;
   createdAt: string;
 }
@@ -38,8 +36,6 @@ export interface FolderItem {
   subfolderCount: number;
   fileCount: number;
   totalSizeBytes?: string;
-  wrappedFolderKey?: string;
-  encryptedBody?: string;
 }
 
 const DRAG_TYPE = ITEM_DRAG_TYPE;

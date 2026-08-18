@@ -1,15 +1,12 @@
 #!/usr/bin/env npx tsx
+// ddrive — browser-like E2E benchmark (post-E2EE-removal)
+//
+// Chunks are sent as PLAINTEXT now — the API encrypts server-side before
+// touching a storage provider (see apps/api/src/storage/server-crypto.ts).
+// This mirrors what the real browser upload/download pipeline does.
 import "dotenv/config";
 import { randomBytes } from "node:crypto";
-import { calculateChunkCount, chunkFileStream, hashBuffer, generateDomainKey } from "@ddv4/processing";
-import type { FileChunkManifestPlaintext } from "@ddv4/types";
-import {
-  prepareFileUpload,
-  buildEncryptedManifest,
-  decryptManifest,
-  encryptFileContentChunk,
-  decryptFileContentChunk,
-} from "../apps/frontend/src/lib/crypto.js";
+import { calculateChunkCount, chunkFileStream, hashBuffer } from "@ddv4/processing";
 
 const BASE_URL = process.env.DDC_TEST_URL ?? "http://localhost:3000";
 const GRAPHQL = `${BASE_URL}/graphql`;
@@ -43,22 +40,7 @@ type UploadedBlobTransportInput = {
 
 type AuthResponse = {
   token: string;
-  user: {
-    id: string;
-    email: string;
-    username?: string | null;
-    crypto: {
-      wrappedARKByPassword: string;
-      wrappedARKByRecovery: string;
-      argon2Params: {
-        memoryKB: number;
-        iterations: number;
-        parallelism: number;
-        saltB64: string;
-      };
-      lastPasswordChangeAt: string;
-    };
-  };
+  user: { id: string; email: string; username?: string | null };
 };
 
 function fmtMs(ms: number): string {
@@ -98,20 +80,10 @@ async function login(): Promise<AuthResponse> {
     `mutation($emailOrUsername: String!, $password: String!) {
       login(emailOrUsername: $emailOrUsername, password: $password) {
         token
-        user {
-          id
-          email
-          username
-          crypto {
-            wrappedARKByPassword
-            wrappedARKByRecovery
-            argon2Params { memoryKB iterations parallelism saltB64 }
-            lastPasswordChangeAt
-          }
-        }
+        user { id email username }
       }
     }`,
-        { emailOrUsername: TEST_LOGIN, password: TEST_PASSWORD },
+    { emailOrUsername: TEST_LOGIN, password: TEST_PASSWORD },
   );
   return data.login;
 }
@@ -142,7 +114,7 @@ async function fetchBlob(blobId: string, token: string): Promise<ArrayBuffer> {
 
 async function main() {
   const fileSize = TEST_FILE_SIZE_MB * 1024 * 1024;
-  console.log(`\n=== DiscordDrive browser-like E2E benchmark ===`);
+  console.log(`\n=== ddrive browser-like E2E benchmark (plaintext client, server-side crypto) ===`);
   console.log(`Server:      ${BASE_URL}`);
   console.log(`File size:   ${humanBytes(fileSize)}`);
   console.log(`Chunk size:  ${humanBytes(CHUNK_SIZE)}`);
@@ -150,7 +122,6 @@ async function main() {
 
   const auth = await login();
   const token = auth.token;
-  const filesKey = await generateDomainKey();
 
   console.log(`\n1) Generating test payload...`);
   const genStart = performance.now();
@@ -162,16 +133,11 @@ async function main() {
   const genMs = performance.now() - genStart;
   console.log(`   generated in ${fmtMs(genMs)}, sha256=${originalHash.slice(0, 24)}..., chunks=${chunkCount}`);
 
-  console.log(`\n2) Frontend crypto prepare + initUpload...`);
+  console.log(`\n2) initUpload...`);
   const prepStart = performance.now();
-  const prepared = await prepareFileUpload(filesKey, {
-    fileName: file.name,
-    mimeType: file.type || "application/octet-stream",
-    plaintextSizeBytes: file.size,
-  });
   const init = await gql<{ initUpload: { fileId: string; status: string } }>(
-    `mutation($parentFolderId: ID, $name: String, $mimeType: String, $wrappedFEK: String!, $totalCiphertextBytes: String!, $chunkCount: Int!) {
-      initUpload(parentFolderId: $parentFolderId, name: $name, mimeType: $mimeType, wrappedFEK: $wrappedFEK, totalCiphertextBytes: $totalCiphertextBytes, chunkCount: $chunkCount) {
+    `mutation($parentFolderId: ID, $name: String, $mimeType: String, $totalBytes: String!, $chunkCount: Int!) {
+      initUpload(parentFolderId: $parentFolderId, name: $name, mimeType: $mimeType, totalBytes: $totalBytes, chunkCount: $chunkCount) {
         fileId
         status
       }
@@ -180,8 +146,7 @@ async function main() {
       parentFolderId: null,
       name: file.name,
       mimeType: file.type || "application/octet-stream",
-      wrappedFEK: prepared.wrappedFEK,
-      totalCiphertextBytes: String(file.size),
+      totalBytes: String(file.size),
       chunkCount,
     },
     token,
@@ -190,31 +155,20 @@ async function main() {
   const prepMs = performance.now() - prepStart;
   console.log(`   fileId=${fileId} in ${fmtMs(prepMs)}`);
 
-  console.log(`\n3) Browser-like chunked encrypt+upload...`);
+  console.log(`\n3) Browser-like chunked plaintext upload (server encrypts)...`);
   const plaintextChunks: Array<{ index: number; data: Uint8Array }> = [];
   for await (const chunk of chunkFileStream(file, CHUNK_SIZE)) plaintextChunks.push(chunk);
 
-  const manifest: FileChunkManifestPlaintext = {
-    schemaVersion: 1,
-    chunkSizeBytes: CHUNK_SIZE,
-    chunks: [],
-  };
-
   const uploadedBlobRecords: UploadedBlobTransportInput[] = [];
-  const chunkEncryptTimes: number[] = [];
   const chunkRequestTimes: number[] = [];
   const uploadStart = performance.now();
   let uploadedBytes = 0;
 
   const uploadOneChunk = async (chunk: { index: number; data: Uint8Array }) => {
     const chunkBuffer = chunk.data.buffer.slice(chunk.data.byteOffset, chunk.data.byteOffset + chunk.data.byteLength) as ArrayBuffer;
-    const encryptStart = performance.now();
-    const ciphertext = await encryptFileContentChunk(prepared.rootFek, chunkBuffer);
-    const encryptMs = performance.now() - encryptStart;
-    const ciphertextBuffer = ciphertext.buffer.slice(ciphertext.byteOffset, ciphertext.byteOffset + ciphertext.byteLength) as ArrayBuffer;
     const blobId = `${fileId}:chunk:${chunk.index}`;
     const requestStart = performance.now();
-    const result = await uploadBlob(blobId, ciphertextBuffer, token, {
+    const result = await uploadBlob(blobId, chunkBuffer, token, {
       "X-Upload-Id": `bench-${Date.now()}`,
       "X-Chunk-Index": String(chunk.index),
       "X-Chunk-Count": String(chunkCount),
@@ -222,11 +176,6 @@ async function main() {
     });
     const requestMs = performance.now() - requestStart;
 
-    manifest.chunks.push({
-      index: chunk.index,
-      blobId,
-      sizeBytes: ciphertext.byteLength,
-    });
     uploadedBlobRecords.push({
       blobId: result.blobId,
       sizeBytes: result.sizeBytes,
@@ -238,7 +187,6 @@ async function main() {
       webhookId: result.webhookId,
     });
     uploadedBytes += chunk.data.byteLength;
-    chunkEncryptTimes.push(encryptMs);
     chunkRequestTimes.push(requestMs);
   };
 
@@ -253,38 +201,19 @@ async function main() {
   const uploadMs = performance.now() - uploadStart;
   console.log(`   upload complete in ${fmtMs(uploadMs)} @ ${mbps(file.size, uploadMs).toFixed(2)} MB/s`);
 
-  console.log(`\n4) Manifest upload + commitManifest(blobs)...`);
+  console.log(`\n4) commitManifest(blobs)...`);
   const commitStart = performance.now();
-  const encryptedManifest = await buildEncryptedManifest(prepared.rootFek, manifest);
-  const manifestBlobId = `${fileId}:manifest`;
-  const manifestBuffer = encryptedManifest.buffer.slice(encryptedManifest.byteOffset, encryptedManifest.byteOffset + encryptedManifest.byteLength) as ArrayBuffer;
-  const manifestResult = await uploadBlob(manifestBlobId, manifestBuffer, token, {
-    "X-Upload-Id": `bench-${Date.now()}`,
-    "X-Chunk-Index": "manifest",
-    "X-Chunk-Count": String(chunkCount),
-    "X-Client-Timestamp": new Date().toISOString(),
-  });
-  uploadedBlobRecords.push({
-    blobId: manifestResult.blobId,
-    sizeBytes: manifestResult.sizeBytes,
-    contentHash: manifestResult.contentHash,
-    storageKind: manifestResult.storageKind,
-    storagePath: manifestResult.storagePath,
-    discordMessageId: manifestResult.discordMessageId,
-    discordChannelId: manifestResult.discordChannelId,
-    webhookId: manifestResult.webhookId,
-  });
-
+  const manifestBlobId = `${fileId}:chunk:${chunkCount - 1}`; // last chunk doubles as manifest ref post-E2EE
   await gql<{ commitManifest: { success: boolean } }>(
-    `mutation($fileId: ID!, $manifestBlobId: String!, $totalCiphertextBytes: String!, $chunkCount: Int!, $blobs: [UploadedBlobTransportInput!]!) {
-      commitManifest(fileId: $fileId, manifestBlobId: $manifestBlobId, totalCiphertextBytes: $totalCiphertextBytes, chunkCount: $chunkCount, blobs: $blobs) {
+    `mutation($fileId: ID!, $manifestBlobId: String!, $totalBytes: String!, $chunkCount: Int!, $blobs: [UploadedBlobTransportInput!]!) {
+      commitManifest(fileId: $fileId, manifestBlobId: $manifestBlobId, totalBytes: $totalBytes, chunkCount: $chunkCount, blobs: $blobs) {
         success
       }
     }`,
     {
       fileId,
       manifestBlobId,
-      totalCiphertextBytes: String(file.size),
+      totalBytes: String(file.size),
       chunkCount,
       blobs: uploadedBlobRecords,
     },
@@ -293,15 +222,12 @@ async function main() {
   const commitMs = performance.now() - commitStart;
   console.log(`   commit complete in ${fmtMs(commitMs)}`);
 
-  console.log(`\n5) Browser-like download + decrypt + verify...`);
+  console.log(`\n5) Browser-like download + verify (server decrypts)...`);
   const dlStart = performance.now();
-  const manifestCipher = await fetchBlob(manifestBlobId, token);
-  const manifestPlain = await decryptManifest(prepared.rootFek, Buffer.from(manifestCipher).toString("base64"));
   const downloadedChunks: Uint8Array[] = [];
-  for (const chunkMeta of [...manifestPlain.chunks].sort((a, b) => a.index - b.index)) {
-    const ciphertext = new Uint8Array(await fetchBlob(chunkMeta.blobId, token));
-    const plaintext = await decryptFileContentChunk(prepared.rootFek, ciphertext);
-    downloadedChunks.push(new Uint8Array(plaintext));
+  for (let i = 0; i < chunkCount; i++) {
+    const body = new Uint8Array(await fetchBlob(`${fileId}:chunk:${i}`, token));
+    downloadedChunks.push(body);
   }
   const totalDownloaded = downloadedChunks.reduce((sum, c) => sum + c.byteLength, 0);
   const reassembled = new Uint8Array(totalDownloaded);
@@ -313,7 +239,7 @@ async function main() {
   const downloadHash = await hashBuffer(reassembled.buffer.slice(reassembled.byteOffset, reassembled.byteOffset + reassembled.byteLength) as ArrayBuffer);
   const dlMs = performance.now() - dlStart;
   const hashOk = downloadHash === originalHash;
-  console.log(`   download+decrypt in ${fmtMs(dlMs)} @ ${mbps(totalDownloaded, dlMs).toFixed(2)} MB/s`);
+  console.log(`   download+verify in ${fmtMs(dlMs)} @ ${mbps(totalDownloaded, dlMs).toFixed(2)} MB/s`);
   console.log(`   hash verify: ${hashOk ? "PASS" : "FAIL"}`);
   if (!hashOk) throw new Error(`Hash mismatch: ${downloadHash} != ${originalHash}`);
 
@@ -325,14 +251,13 @@ async function main() {
 
   const totalUploadPathMs = prepMs + uploadMs + commitMs;
   console.log(`\n=== SUMMARY ===`);
-  console.log(`prep+init:               ${fmtMs(prepMs)}`);
-  console.log(`browser-like upload:     ${fmtMs(uploadMs)} @ ${mbps(file.size, uploadMs).toFixed(2)} MB/s`);
-  console.log(`manifest+commit:         ${fmtMs(commitMs)}`);
-  console.log(`UPLOAD PATH TOTAL:       ${fmtMs(totalUploadPathMs)} @ ${mbps(file.size, totalUploadPathMs).toFixed(2)} MB/s`);
-  console.log(`download+decrypt+verify: ${fmtMs(dlMs)} @ ${mbps(file.size, dlMs).toFixed(2)} MB/s`);
-  console.log(`delete:                  ${fmtMs(deleteMs)}`);
-  console.log(`chunk encrypt avg:       ${(chunkEncryptTimes.reduce((a, b) => a + b, 0) / chunkEncryptTimes.length).toFixed(2)} ms`);
-  console.log(`chunk request avg:       ${(chunkRequestTimes.reduce((a, b) => a + b, 0) / chunkRequestTimes.length).toFixed(2)} ms`);
+  console.log(`init:                     ${fmtMs(prepMs)}`);
+  console.log(`browser-like upload:      ${fmtMs(uploadMs)} @ ${mbps(file.size, uploadMs).toFixed(2)} MB/s`);
+  console.log(`commit:                   ${fmtMs(commitMs)}`);
+  console.log(`UPLOAD PATH TOTAL:        ${fmtMs(totalUploadPathMs)} @ ${mbps(file.size, totalUploadPathMs).toFixed(2)} MB/s`);
+  console.log(`download+verify:          ${fmtMs(dlMs)} @ ${mbps(file.size, dlMs).toFixed(2)} MB/s`);
+  console.log(`delete:                   ${fmtMs(deleteMs)}`);
+  console.log(`chunk request avg:        ${(chunkRequestTimes.reduce((a, b) => a + b, 0) / chunkRequestTimes.length).toFixed(2)} ms`);
 }
 
 main().catch((err) => {

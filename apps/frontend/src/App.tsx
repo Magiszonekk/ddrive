@@ -6,7 +6,6 @@ import { Dashboard } from "./pages/Dashboard.js";
 import { SharedFile } from "./pages/SharedFile.js";
 import { Settings } from "./pages/Settings.js";
 import { HealthCheck } from "./pages/HealthCheck.js";
-import { Unlock } from "./pages/Unlock.js";
 import { MainLayout } from "./components/layout/MainLayout.js";
 import { NotificationToasts } from "./components/layout/NotificationToasts.js";
 
@@ -21,16 +20,11 @@ function isTokenExpired(token: string): boolean {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
-  const ark = useAuthStore((s) => s.ark);
   const logout = useAuthStore((s) => s.logout);
 
   if (!token || isTokenExpired(token)) {
     if (token) logout();
     return <Navigate to="/login" replace />;
-  }
-
-  if (!ark) {
-    return <Unlock />;
   }
 
   return <>{children}</>;

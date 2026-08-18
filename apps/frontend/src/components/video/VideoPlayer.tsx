@@ -1,16 +1,11 @@
-// DiscorDrive v4 — Video player modal with Service Worker streaming
+// ddrive — Video player modal (real HTTP Range streaming, no Service Worker)
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  registerStream,
-  unregisterStream,
-  getStreamUrl,
-  type StreamFileInfo,
-} from "../../lib/videoStream.js";
+import { getStreamUrl, type StreamFileInfo } from "../../lib/videoStream.js";
 import { downloadFile } from "../../lib/download.js";
 
 interface VideoPlayerProps {
-  file: StreamFileInfo & { fileName: string };
+  file: StreamFileInfo & { fileId: string };
   onClose: () => void;
 }
 
@@ -21,27 +16,11 @@ export function VideoPlayer({ file, onClose }: VideoPlayerProps) {
   const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
-    let unmounted = false;
-
-    registerStream(file)
-      .then(() => {
-        if (!unmounted && videoRef.current) {
-          videoRef.current.src = getStreamUrl(file.fileId);
-          videoRef.current.load();
-        }
-      })
-      .catch((err) => {
-        if (!unmounted) {
-          setErrorMsg(err instanceof Error ? err.message : "Stream setup failed");
-          setState("error");
-        }
-      });
-
-    return () => {
-      unmounted = true;
-      unregisterStream(file.fileId);
-    };
-  }, [file]);
+    const video = videoRef.current;
+    if (!video) return;
+    video.src = getStreamUrl(file.fileId);
+    video.load();
+  }, [file.fileId]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -79,8 +58,7 @@ export function VideoPlayer({ file, onClose }: VideoPlayerProps) {
       fileId: file.fileId,
       fileName: file.fileName,
       mimeType: file.mimeType,
-      manifestBlobId: file.manifestBlobId,
-      wrappedFEK: file.wrappedFEK,
+      manifestBlobId: "",
     });
   }, [file, onClose]);
 

@@ -1,10 +1,11 @@
-// DiscorDrive v4 — Download helpers for secure files v2
+// ddrive — Download helpers
+//
+// Chunks arrive already decrypted (server holds the key) — no client-side
+// crypto here anymore. See docs/hermes/concept.md section 4.1.
 
 import { zipSync } from "fflate";
-import { fetchBlobBody, fetchBlobBodyShared, fetchBlobDescriptor } from "./api.js";
-import { decryptManifest, decryptFileContentChunk, decryptMeta, fromBase64, unwrapRootFek, toBase64, unwrapFolderKey, decryptFolderBody } from "./crypto.js";
+import { fetchBlobBody, fetchBlobBodyShared } from "./api.js";
 import { gqlRequest } from "./graphql.js";
-import { useAuthStore } from "../stores/auth.js";
 import { useDownloadStore } from "../stores/download.js";
 import { DownloadStatus } from "@ddv4/types";
 
@@ -15,16 +16,14 @@ interface DownloadOptions {
   fileName: string;
   mimeType: string;
   manifestBlobId: string;
-  wrappedFEK: string;
 }
 
 interface SharedDownloadOptions {
   fileName: string;
   mimeType: string;
   manifestBlobId: string;
-  rootFek: CryptoKey;
   shareId?: string;
-  capabilityToken?: string;
+  shareToken?: string;
 }
 
 interface DownloadResult {
@@ -38,138 +37,120 @@ function emitDownloadStarted(detail: DownloadResult) {
   }
 }
 
+/** Owner download: fetch every chunk blob (already plaintext) and reassemble. */
 export async function downloadFile(options: DownloadOptions): Promise<DownloadResult> {
-  const filesKey = useAuthStore.getState().filesKey;
-  if (!filesKey) throw new Error("Not authenticated");
-
   const downloadStore = useDownloadStore.getState();
   const controller = new AbortController();
   downloadStore.registerController(options.fileId, controller);
 
-  // Emit download started immediately so UI can show progress
   emitDownloadStarted({ fileName: options.fileName, bytes: 0 });
 
   try {
-    const rootFek = await unwrapRootFek(filesKey, options.wrappedFEK);
     downloadStore.updateDownload(options.fileId, { status: DownloadStatus.DOWNLOADING });
 
-    const manifestDescriptor = await fetchBlobDescriptor(options.manifestBlobId);
-    const manifestBody = await fetchBlobBody(manifestDescriptor.blobId, controller.signal);
-    const manifest = await decryptManifest(rootFek, toBase64(new Uint8Array(manifestBody)));
-
+    const chunkBlobIds = await listChunkBlobIds(options.fileId);
     downloadStore.updateDownload(options.fileId, {
       status: DownloadStatus.DOWNLOADING,
-      totalChunks: manifest.chunks.length,
+      totalChunks: chunkBlobIds.length,
     });
 
-    const sortedChunks = manifest.chunks.slice().sort((a, b) => a.index - b.index);
-    const chunkCount = sortedChunks.length;
-    const chunks: ArrayBuffer[] = new Array(chunkCount);
-    let downloadedBytes = 0;
-    let downloadedChunks = 0;
-    const DOWNLOAD_CONCURRENCY = 20;
-    const CHUNK_TIMEOUT_MS = 60_000;
-    const MAX_CHUNK_RETRIES = 2;
-
-    const fetchChunkWithTimeout = async (blobId: string): Promise<ArrayBuffer> => {
-      for (let attempt = 0; attempt <= MAX_CHUNK_RETRIES; attempt++) {
-        if (controller.signal.aborted) throw new DOMException("Download aborted", "AbortError");
-        const timeoutSignal = AbortSignal.timeout(CHUNK_TIMEOUT_MS);
-        const signal = AbortSignal.any([controller.signal, timeoutSignal]);
-        try {
-          return await fetchBlobBody(blobId, signal);
-        } catch (err) {
-          const isTimeout = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
-          if (isTimeout && !controller.signal.aborted && attempt < MAX_CHUNK_RETRIES) continue;
-          throw err;
-        }
-      }
-      throw new Error(`Chunk ${blobId} failed after ${MAX_CHUNK_RETRIES} retries`);
-    };
-
-    let cursor = 0;
-    const downloadWorker = async () => {
-      while (true) {
-        const i = cursor++;
-        if (i >= chunkCount) break;
-        const chunkBody = await fetchChunkWithTimeout(sortedChunks[i]!.blobId);
-        const decrypted = await decryptFileContentChunk(rootFek, new Uint8Array(chunkBody));
-        chunks[i] = decrypted;
-        downloadedBytes += decrypted.byteLength;
-        downloadedChunks += 1;
-        downloadStore.updateDownload(options.fileId, {
-          downloadedChunks,
-          bytesDownloaded: downloadedBytes,
-        });
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, chunkCount) }, downloadWorker));
+    const chunks = await downloadChunksConcurrently(
+      chunkBlobIds,
+      (blobId, signal) => fetchBlobBody(blobId, signal),
+      controller.signal,
+      (downloadedChunks, bytesDownloaded) =>
+        downloadStore.updateDownload(options.fileId, { downloadedChunks, bytesDownloaded }),
+    );
 
     saveBlob(chunks, options.fileName, options.mimeType);
     downloadStore.updateDownload(options.fileId, { status: DownloadStatus.DONE });
-    const result = {
+    return {
       fileName: options.fileName,
       bytes: chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
     };
-    return result;
   } finally {
     // don't removeDownload here — let DownloadProgress auto-dismiss after 3s
   }
 }
 
+/** Share-link download: same idea, authorized by share token instead of a session. */
 export async function downloadSharedFile(options: SharedDownloadOptions & { signal?: AbortSignal }): Promise<DownloadResult> {
   emitDownloadStarted({ fileName: options.fileName, bytes: 0 });
 
-  const useShare = options.shareId && options.capabilityToken;
+  const useShare = options.shareId && options.shareToken;
   const fetchFn = useShare
-    ? (blobId: string, signal?: AbortSignal) =>
-        fetchBlobBodyShared(blobId, options.shareId!, options.capabilityToken!, signal)
+    ? (blobId: string, signal?: AbortSignal) => fetchBlobBodyShared(blobId, options.shareId!, options.shareToken!, signal)
     : (blobId: string, signal?: AbortSignal) => fetchBlobBody(blobId, signal);
 
-  const manifestBody = await fetchFn(options.manifestBlobId, options.signal);
-  const manifest = await decryptManifest(options.rootFek, toBase64(new Uint8Array(manifestBody)));
+  // Shared downloads only know the manifestBlobId (which, post-E2EE, is
+  // really just "the file's primary blob id" — chunk enumeration for shares
+  // happens server-side via the share access response in future work; for
+  // now a share exposes a single blob).
+  const body = await fetchFn(options.manifestBlobId, options.signal);
+  const chunks = [body];
 
-  const sharedSortedChunks = manifest.chunks.slice().sort((a, b) => a.index - b.index);
-  const sharedChunkCount = sharedSortedChunks.length;
-  const chunks: ArrayBuffer[] = new Array(sharedChunkCount);
+  saveBlob(chunks, options.fileName, options.mimeType);
+  return {
+    fileName: options.fileName,
+    bytes: chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
+  };
+}
+
+async function listChunkBlobIds(fileId: string): Promise<string[]> {
+  const { uploadStatus } = await gqlRequest<{
+    uploadStatus: { chunkCount: number; uploadedChunkIndices: number[] };
+  }>(
+    `query UploadStatus($fileId: ID!) { uploadStatus(fileId: $fileId) { chunkCount uploadedChunkIndices } }`,
+    { fileId },
+  );
+  const count = uploadStatus.chunkCount;
+  return Array.from({ length: count }, (_, i) => `${fileId}:chunk:${i}`);
+}
+
+async function downloadChunksConcurrently(
+  blobIds: string[],
+  fetchFn: (blobId: string, signal?: AbortSignal) => Promise<ArrayBuffer>,
+  signal: AbortSignal,
+  onProgress: (downloadedChunks: number, bytesDownloaded: number) => void,
+): Promise<ArrayBuffer[]> {
+  const count = blobIds.length;
+  const chunks: ArrayBuffer[] = new Array(count);
   const DOWNLOAD_CONCURRENCY = 20;
   const CHUNK_TIMEOUT_MS = 60_000;
   const MAX_CHUNK_RETRIES = 2;
+  let downloadedBytes = 0;
+  let downloadedChunks = 0;
 
-  const fetchSharedChunkWithTimeout = async (blobId: string): Promise<ArrayBuffer> => {
+  const fetchChunkWithTimeout = async (blobId: string): Promise<ArrayBuffer> => {
     for (let attempt = 0; attempt <= MAX_CHUNK_RETRIES; attempt++) {
-      if (options.signal?.aborted) throw new DOMException("Download aborted", "AbortError");
+      if (signal.aborted) throw new DOMException("Download aborted", "AbortError");
       const timeoutSignal = AbortSignal.timeout(CHUNK_TIMEOUT_MS);
-      const combined = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+      const combined = AbortSignal.any([signal, timeoutSignal]);
       try {
         return await fetchFn(blobId, combined);
       } catch (err) {
         const isTimeout = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
-        if (isTimeout && !options.signal?.aborted && attempt < MAX_CHUNK_RETRIES) continue;
+        if (isTimeout && !signal.aborted && attempt < MAX_CHUNK_RETRIES) continue;
         throw err;
       }
     }
     throw new Error(`Chunk ${blobId} failed after ${MAX_CHUNK_RETRIES} retries`);
   };
 
-  let sharedCursor = 0;
-  const sharedWorker = async () => {
+  let cursor = 0;
+  const worker = async () => {
     while (true) {
-      const i = sharedCursor++;
-      if (i >= sharedChunkCount) break;
-      const chunkBody = await fetchSharedChunkWithTimeout(sharedSortedChunks[i]!.blobId);
-      const decrypted = await decryptFileContentChunk(options.rootFek, new Uint8Array(chunkBody));
-      chunks[i] = decrypted;
+      const i = cursor++;
+      if (i >= count) break;
+      const body = await fetchChunkWithTimeout(blobIds[i]!);
+      chunks[i] = body;
+      downloadedBytes += body.byteLength;
+      downloadedChunks += 1;
+      onProgress(downloadedChunks, downloadedBytes);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, sharedChunkCount) }, sharedWorker));
-
-  saveBlob(chunks, options.fileName, options.mimeType);
-  const result = {
-    fileName: options.fileName,
-    bytes: chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
-  };
-  return result;
+  await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, count) }, worker));
+  return chunks;
 }
 
 // === Folder ZIP download ===
@@ -177,31 +158,28 @@ export async function downloadSharedFile(options: SharedDownloadOptions & { sign
 const FOLDER_TREE_QUERY = `
   query FolderTree($parentFolderId: ID) {
     files(parentFolderId: $parentFolderId) {
-      id encryptedName primaryManifestBlobId wrappedFEK chunkCount status
+      id name mimeType chunkCount status
     }
     folders(parentFolderId: $parentFolderId) {
-      id encryptedBody wrappedFolderKey
+      id name
     }
   }
 `;
 
 interface FolderTreeFile {
   id: string;
-  encryptedName: string | null;
-  primaryManifestBlobId: string | null;
-  wrappedFEK: string;
+  name: string | null;
+  mimeType: string | null;
   chunkCount: number;
   status: string;
 }
 
 interface FolderTreeFolder {
   id: string;
-  encryptedBody: string;
-  wrappedFolderKey: string;
+  name: string;
 }
 
 async function collectZipEntries(
-  filesKey: CryptoKey,
   parentFolderId: string | null,
   pathPrefix: string,
   entries: Record<string, Uint8Array>,
@@ -211,22 +189,11 @@ async function collectZipEntries(
     { parentFolderId },
   );
 
-  for (const file of result.files.filter((f) => f.status === "READY" && f.primaryManifestBlobId)) {
-    let fileName = file.id;
+  for (const file of result.files.filter((f) => f.status === "READY")) {
+    const fileName = file.name ?? file.id;
     try {
-      const fek = await unwrapRootFek(filesKey, file.wrappedFEK);
-      if (file.encryptedName) {
-        fileName = await decryptMeta(fek, file.encryptedName);
-      }
-
-      const manifestBody = await fetchBlobBody(file.primaryManifestBlobId!);
-      const manifest = await decryptManifest(fek, toBase64(new Uint8Array(manifestBody)));
-      const sortedChunks = manifest.chunks.slice().sort((a, b) => a.index - b.index);
-
-      const chunkBuffers = await Promise.all(
-        sortedChunks.map((c) => fetchBlobBody(c.blobId).then((buf) => decryptFileContentChunk(fek, new Uint8Array(buf)))),
-      );
-
+      const chunkBlobIds = await listChunkBlobIds(file.id);
+      const chunkBuffers = await Promise.all(chunkBlobIds.map((id) => fetchBlobBody(id)));
       const totalBytes = chunkBuffers.reduce((sum, b) => sum + b.byteLength, 0);
       const combined = new Uint8Array(totalBytes);
       let offset = 0;
@@ -238,19 +205,13 @@ async function collectZipEntries(
       const zipPath = pathPrefix ? `${pathPrefix}/${fileName}` : fileName;
       entries[zipPath] = combined;
     } catch {
-      // skip files that fail to decrypt
+      // skip files that fail to download
     }
   }
 
   for (const folder of result.folders) {
-    let folderName = folder.id;
-    try {
-      const folderKey = await unwrapFolderKey(folder.wrappedFolderKey, filesKey);
-      const body = await decryptFolderBody(folder.encryptedBody, folderKey);
-      folderName = body.name;
-    } catch { /* fallback to id */ }
-    const subPath = pathPrefix ? `${pathPrefix}/${folderName}` : folderName;
-    await collectZipEntries(filesKey, folder.id, subPath, entries);
+    const subPath = pathPrefix ? `${pathPrefix}/${folder.name}` : folder.name;
+    await collectZipEntries(folder.id, subPath, entries);
   }
 }
 
@@ -259,15 +220,12 @@ export async function downloadFolderAsZip(
   folderName: string,
   onProgress?: (msg: string) => void,
 ): Promise<void> {
-  const filesKey = useAuthStore.getState().filesKey;
-  if (!filesKey) throw new Error("Not authenticated");
-
   onProgress?.("Collecting files…");
   const entries: Record<string, Uint8Array> = {};
-  await collectZipEntries(filesKey, folderId, "", entries);
+  await collectZipEntries(folderId, "", entries);
 
   if (Object.keys(entries).length === 0) {
-    throw new Error("Folder is empty or all files failed to decrypt");
+    throw new Error("Folder is empty");
   }
 
   onProgress?.(`Packing ${Object.keys(entries).length} files…`);

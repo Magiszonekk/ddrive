@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { createYoga } from "graphql-yoga";
 import { buildSchema, createContext } from "./schema.js";
 import { handleBlobContent, handleBlobContentForShare, handleBlobMetadata, handleBlobUpload } from "./handlers/blob.js";
+import { handleStreamRequest } from "./handlers/stream.js";
 import { checkRateLimit } from "./middleware/rate-limit.js";
 import { serverConfig } from "@ddv4/config/server";
 import { pluginRegistry } from "./plugin-registry.js";
@@ -24,7 +25,7 @@ async function handleRequest(req: Request): Promise<Response> {
       headers: {
         "Access-Control-Allow-Origin": serverConfig.frontendUrl,
         "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Upload-Id, X-Chunk-Index, X-Chunk-Count, X-Client-Timestamp, X-Share-Id, X-Capability-Token",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Upload-Id, X-Chunk-Index, X-Chunk-Count, X-Client-Timestamp, X-Share-Id, X-Share-Token",
         "Access-Control-Max-Age": "86400",
       },
     });
@@ -89,6 +90,11 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (method === "PUT" && (params = matchRoute(pathname, "/api/blob/:blobId"))) {
     return handleBlobUpload(req, params as { blobId: string });
+  }
+
+  // Range-proxy streaming (video/audio) — server decrypts on demand, no SW.
+  if (method === "GET" && (params = matchRoute(pathname, "/api/stream/:fileId"))) {
+    return handleStreamRequest(req, params as { fileId: string });
   }
 
   // Plugin routes: /api/plugin/:pluginName/...

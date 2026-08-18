@@ -3,14 +3,12 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { gqlRequest } from "../../lib/graphql.js";
-import { useAuthStore } from "../../stores/auth.js";
-import { unwrapFolderKey, decryptFolderBody } from "../../lib/crypto.js";
 import { ITEM_DRAG_TYPE, decodeDragPayload } from "../../lib/dragTypes.js";
 
 const FOLDER_PATH_QUERY = `
   query FolderPath($folderId: ID!) {
     folderPath(folderId: $folderId) {
-      id encryptedBody wrappedFolderKey
+      id name
     }
   }
 `;
@@ -27,28 +25,17 @@ interface Props {
 }
 
 export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) {
-  const filesKey = useAuthStore((s) => s.filesKey);
   const [dragOverId, setDragOverId] = useState<string | "root" | null>(null);
 
   const { data: crumbs = [] } = useQuery<FolderCrumb[]>({
     queryKey: ["folderPath", folderId],
-    enabled: Boolean(folderId && filesKey),
+    enabled: Boolean(folderId),
     queryFn: async () => {
       const result = await gqlRequest<{
-        folderPath: { id: string; encryptedBody: string; wrappedFolderKey: string }[];
+        folderPath: { id: string; name: string }[];
       }>(FOLDER_PATH_QUERY, { folderId });
 
-      return Promise.all(
-        result.folderPath.map(async (f) => {
-          let name = f.id;
-          try {
-            const key = await unwrapFolderKey(f.wrappedFolderKey, filesKey!);
-            const body = await decryptFolderBody(f.encryptedBody, key);
-            name = body.name;
-          } catch { /* fallback to id */ }
-          return { id: f.id, name };
-        }),
-      );
+      return result.folderPath.map((f) => ({ id: f.id, name: f.name }));
     },
   });
 
@@ -68,7 +55,6 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) 
       const payload = decodeDragPayload(e);
       if (!payload) return;
       const dest = targetId === "root" ? null : targetId;
-      // Don't move an item into itself or into its current location
       if (payload.id === dest) return;
       if (dest === (folderId ?? null)) return;
       if (payload.type === "file") onMoveFile?.(payload.id, dest);
@@ -86,7 +72,6 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) 
 
   return (
     <>
-      {/* Mobile: back arrow */}
       <div className="flex items-center gap-2 text-sm md:hidden">
         {folderId ? (
           <Link
@@ -101,13 +86,11 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) 
         )}
       </div>
 
-      {/* Desktop: full path with drop targets */}
       <div className="hidden items-center gap-1 text-sm md:flex">
         <span {...dropProps("root")} className={crumbStyle("root")}>
           <Link
             to="/"
             className={folderId ? "text-muted hover:text-ink" : "font-medium text-ink"}
-            // prevent link navigation when dragging
             onClick={(e) => dragOverId === "root" && e.preventDefault()}
           >
             Files

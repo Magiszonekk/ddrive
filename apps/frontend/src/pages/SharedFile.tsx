@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
+import { fetchBlobBodyShared } from "../lib/api.js";
 import { gqlRequest } from "../lib/graphql.js";
 import { DOWNLOAD_SUCCESS_EVENT } from "../lib/download.js";
 import type { ShareAccessResponse } from "@ddv4/types/api";
@@ -13,7 +14,7 @@ const ACCESS_SHARE = `
       fileId
       name
       mimeType
-      primaryManifestBlobId
+      chunkCount
       allowContent
       allowPreview
     }
@@ -22,18 +23,25 @@ const ACCESS_SHARE = `
 
 interface ResolvedShareInfo {
   shareId: string;
+  fileId: string;
   fileName: string;
   mimeType: string;
+  chunkCount: number;
   allowContent: boolean;
-  manifestBlobId: string;
+  allowPreview: boolean;
   token: string;
 }
+
+function isImage(mimeType: string) { return mimeType.startsWith("image/"); }
+function isVideo(mimeType: string) { return mimeType.startsWith("video/"); }
+function isAudio(mimeType: string) { return mimeType.startsWith("audio/"); }
 
 export function SharedFile() {
   const { shareId } = useParams<{ shareId: string }>();
   const [info, setInfo] = useState<ResolvedShareInfo | null>(null);
   const [error, setError] = useState("");
   const [downloading, setDownloading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const pushNotification = useNotificationStore((s) => s.push);
 
   useEffect(() => {
@@ -69,10 +77,12 @@ export function SharedFile() {
 
         setInfo({
           shareId: accessShare.shareId,
+          fileId: accessShare.fileId,
           fileName: accessShare.name ?? "shared-file",
           mimeType: accessShare.mimeType ?? "application/octet-stream",
+          chunkCount: accessShare.chunkCount,
           allowContent: accessShare.allowContent,
-          manifestBlobId: accessShare.primaryManifestBlobId ?? "",
+          allowPreview: accessShare.allowPreview,
           token,
         });
       } catch (err) {
@@ -81,20 +91,47 @@ export function SharedFile() {
     })();
   }, [shareId]);
 
+  // Auto-load an inline preview for images/small video/audio when the share
+  // allows it — real embeds, not just a download prompt (concept.md 4.5).
+  useEffect(() => {
+    if (!info || !shareId || !info.allowPreview) return;
+    if (!isImage(info.mimeType) && !isVideo(info.mimeType) && !isAudio(info.mimeType)) return;
+
+    let revoked = false;
+    let objectUrl: string | null = null;
+
+    (async () => {
+      try {
+        const buffers: ArrayBuffer[] = [];
+        for (let i = 0; i < info.chunkCount; i++) {
+          const body = await fetchBlobBodyShared(`${info.fileId}:chunk:${i}`, shareId, info.token);
+          buffers.push(body);
+        }
+        if (revoked) return;
+        objectUrl = URL.createObjectURL(new Blob(buffers, { type: info.mimeType }));
+        setPreviewUrl(objectUrl);
+      } catch {
+        // fall back to download-only UI
+      }
+    })();
+
+    return () => {
+      revoked = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [info, shareId]);
+
   const handleDownload = async () => {
     if (!shareId || !info) return;
     setDownloading(true);
     setError("");
     try {
-      // TODO(Phase 4): rewrite download to fetch plaintext chunks directly
-      const response = await fetch(`/api/blob/${info.manifestBlobId}`, {
-        headers: {
-          "x-share-id": shareId,
-          "x-share-token": info.token,
-        },
-      });
-      if (!response.ok) throw new Error("Download failed");
-      const blob = await response.blob();
+      const buffers: ArrayBuffer[] = [];
+      for (let i = 0; i < info.chunkCount; i++) {
+        const body = await fetchBlobBodyShared(`${info.fileId}:chunk:${i}`, shareId, info.token);
+        buffers.push(body);
+      }
+      const blob = new Blob(buffers, { type: info.mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -103,6 +140,7 @@ export function SharedFile() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      window.dispatchEvent(new CustomEvent(DOWNLOAD_SUCCESS_EVENT, { detail: { fileName: info.fileName, bytes: blob.size } }));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Download failed";
       setError(message);
@@ -134,6 +172,17 @@ export function SharedFile() {
         <p className="truncate font-medium text-ink">{info.fileName}</p>
         <p className="font-mono text-xs text-muted">{info.mimeType}</p>
       </div>
+
+      {previewUrl && isImage(info.mimeType) && (
+        <img src={previewUrl} alt={info.fileName} className="mb-6 max-h-[60vh] w-full rounded-card border border-rule bg-paper-2 object-contain" />
+      )}
+      {previewUrl && isVideo(info.mimeType) && (
+        <video src={previewUrl} controls autoPlay className="mb-6 max-h-[60vh] w-full rounded-card border border-rule bg-paper-2" />
+      )}
+      {previewUrl && isAudio(info.mimeType) && (
+        <audio src={previewUrl} controls className="mb-6 w-full" />
+      )}
+
       <button
         onClick={handleDownload}
         disabled={downloading || !info.allowContent}

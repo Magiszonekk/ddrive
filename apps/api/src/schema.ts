@@ -125,6 +125,7 @@ export function buildSchema() {
         previewBlobId: String
         thumbnailBlobId: String
         posterBlobId: String
+        chunkCount: Int!
         allowContent: Boolean!
         allowPreview: Boolean!
       }

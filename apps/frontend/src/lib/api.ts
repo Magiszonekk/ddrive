@@ -1,4 +1,8 @@
-// DiscorDrive v4 — HTTP API client for secure files v2
+// ddrive — HTTP API client
+//
+// Chunks now travel as plaintext over HTTPS between browser and API; the
+// server encrypts before it ever reaches a storage provider (see
+// apps/api/src/storage/server-crypto.ts). No client-side crypto here anymore.
 
 import { useAuthStore } from "../stores/auth.js";
 
@@ -89,6 +93,7 @@ export async function fetchBlobDescriptor(blobId: string): Promise<{
   }>;
 }
 
+/** Fetches a blob's already-decrypted plaintext bytes (server decrypts). */
 export async function fetchBlobBody(blobId: string, signal?: AbortSignal): Promise<ArrayBuffer> {
   const response = await fetch(`${API_BASE}/api/blob/${blobId}`, {
     headers: getAuthHeaders(),
@@ -102,16 +107,17 @@ export async function fetchBlobBody(blobId: string, signal?: AbortSignal): Promi
   return response.arrayBuffer();
 }
 
+/** Fetches a blob's plaintext bytes through the no-auth share route. */
 export async function fetchBlobBodyShared(
   blobId: string,
   shareId: string,
-  capabilityToken: string,
+  shareToken: string,
   signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
   const response = await fetch(`${API_BASE}/api/share/blob/${blobId}`, {
     headers: {
       "X-Share-Id": shareId,
-      "X-Capability-Token": capabilityToken,
+      "X-Share-Token": shareToken,
     },
     signal,
   });

@@ -1,12 +1,14 @@
-// DiscorDrive v4 — Upload pipeline for secure files v2
+// ddrive — Upload pipeline
+//
+// Chunks are sent as plaintext over HTTPS; the API encrypts them before they
+// ever reach a storage provider (see apps/api/src/storage/server-crypto.ts).
+// No client-side crypto here anymore — see docs/hermes/concept.md.
 
 import { chunkFileStream } from "@ddv4/processing";
-import type { FileChunkManifestPlaintext } from "@ddv4/types";
 import { UploadStatus } from "@ddv4/types";
 import type { UploadedBlobTransportInput } from "@ddv4/types/api";
 import { gqlRequest } from "./graphql.js";
 import { uploadBlobToApi, BlobUploadError } from "./api.js";
-import { prepareFileUpload, buildEncryptedManifest, encryptFileContentChunk } from "./crypto.js";
 import { LEGACY_UPLOAD_CHUNK_SIZE_BYTES } from "./upload-constants.js";
 import { config } from "@ddv4/config";
 import { useUploadStore } from "../stores/upload.js";
@@ -77,36 +79,33 @@ async function withChunkRetry<T>(fn: () => Promise<T>, signal: AbortSignal): Pro
 const INIT_UPLOAD = `
   mutation InitUpload(
     $parentFolderId: ID
-    $encryptedName: String
-    $encryptedMimeType: String
-    $wrappedFEK: String!
-    $totalCiphertextBytes: String!
+    $name: String
+    $mimeType: String
+    $totalBytes: String!
     $chunkCount: Int!
   ) {
     initUpload(
       parentFolderId: $parentFolderId
-      encryptedName: $encryptedName
-      encryptedMimeType: $encryptedMimeType
-      wrappedFEK: $wrappedFEK
-      totalCiphertextBytes: $totalCiphertextBytes
+      name: $name
+      mimeType: $mimeType
+      totalBytes: $totalBytes
       chunkCount: $chunkCount
     ) { fileId status }
   }
 `;
 
-
 const COMMIT_MANIFEST = `
   mutation CommitManifest(
     $fileId: ID!
     $manifestBlobId: String!
-    $totalCiphertextBytes: String!
+    $totalBytes: String!
     $chunkCount: Int!
     $blobs: [UploadedBlobTransportInput!]!
   ) {
     commitManifest(
       fileId: $fileId
       manifestBlobId: $manifestBlobId
-      totalCiphertextBytes: $totalCiphertextBytes
+      totalBytes: $totalBytes
       chunkCount: $chunkCount
       blobs: $blobs
     ) { success }
@@ -134,15 +133,10 @@ interface UploadStatusResult {
 
 export async function uploadFile(file: File, folderId: string | null): Promise<string> {
   const authState = useAuthStore.getState();
-  const filesKey = authState.filesKey;
   const authToken = authState.token;
 
   if (!authToken) {
     throw new Error("Session expired or missing API auth token. Log in again.");
-  }
-
-  if (!filesKey) {
-    throw new Error("Session is locked. Unlock it before uploading.");
   }
 
   const store = useUploadStore.getState();
@@ -176,32 +170,22 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
   let uploadStartMs: number | null = null;
 
   try {
-    const prepareStartMs = performance.now();
-    const prepared = await prepareFileUpload(filesKey, {
-      fileName: file.name,
-      mimeType: file.type || "application/octet-stream",
-      plaintextSizeBytes: file.size,
-    });
-    const prepareMs = performance.now() - prepareStartMs;
-
     const initUploadStartMs = performance.now();
     const { initUpload } = await gqlRequest<{ initUpload: { fileId: string; status: string } }>(INIT_UPLOAD, {
       parentFolderId: folderId,
-      encryptedName: prepared.encryptedName,
-      encryptedMimeType: prepared.encryptedMimeType,
-      wrappedFEK: prepared.wrappedFEK,
-      totalCiphertextBytes: String(file.size),
+      name: file.name,
+      mimeType: file.type || "application/octet-stream",
+      totalBytes: String(file.size),
       chunkCount,
     }, authToken);
     const initUploadMs = performance.now() - initUploadStartMs;
 
     logUploadEvent({
-      type: "upload_prepare_and_init_timing",
+      type: "upload_init_timing",
       uploadId,
       fileName: file.name,
       fileSize: file.size,
       chunkCount: chunkCount,
-      prepareMs: Number(prepareMs.toFixed(2)),
       initUploadMs: Number(initUploadMs.toFixed(2)),
       preUploadWallMs: Number((performance.now() - sessionStartMs).toFixed(2)),
     });
@@ -213,17 +197,11 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
     store.registerController(realFileId, controller);
     store.updateUpload(realFileId, { status: UploadStatus.UPLOADING });
 
-    const manifest: FileChunkManifestPlaintext = {
-      schemaVersion: 1,
-      chunkSizeBytes: LEGACY_UPLOAD_CHUNK_SIZE_BYTES,
-      chunks: [],
-    };
-
     // Chunks safely on storage, keyed by index and carried across resume
     // attempts so a restart re-sends only what is genuinely missing.
     interface DoneChunk {
-      manifestEntry: FileChunkManifestPlaintext["chunks"][number];
-      /** null once the server already held the chunk — its own row is authoritative. */
+      index: number;
+      plaintextBytes: number;
       blobRecord: UploadedBlobTransportInput | null;
     }
     const doneChunks = new Map<number, DoneChunk>();
@@ -241,24 +219,17 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
 
       const chunkStartMs = performance.now();
       const chunkBuffer = chunk.data.buffer.slice(chunk.data.byteOffset, chunk.data.byteOffset + chunk.data.byteLength) as ArrayBuffer;
-      const encryptStartMs = performance.now();
-      const ciphertext = await encryptFileContentChunk(prepared.rootFek, chunkBuffer);
-      const encryptMs = performance.now() - encryptStartMs;
       const blobId = `${realFileId}:chunk:${chunk.index}`;
 
-      // Already on storage from an earlier attempt: the ciphertext is still
-      // needed to size its manifest entry, but re-sending the bytes is not.
-      // commitManifest needs no record from us either — the row the upload
-      // handler wrote stays authoritative under its skipDuplicates insert.
+      // Already on storage from an earlier attempt: no need to re-send bytes.
       const alreadyStored = serverHasChunks.has(chunk.index);
       let requestMs = 0;
       let blobRecord: UploadedBlobTransportInput | null = null;
 
       if (!alreadyStored) {
-        const ciphertextBuffer = ciphertext.buffer.slice(ciphertext.byteOffset, ciphertext.byteOffset + ciphertext.byteLength) as ArrayBuffer;
         const requestStartMs = performance.now();
         const uploadResult = await withChunkRetry(
-          () => uploadBlobToApi(blobId, ciphertextBuffer, {
+          () => uploadBlobToApi(blobId, chunkBuffer, {
             authToken,
             extraHeaders: {
               "X-Upload-Id": uploadId,
@@ -283,7 +254,8 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
       }
 
       doneChunks.set(chunk.index, {
-        manifestEntry: { index: chunk.index, blobId, sizeBytes: ciphertext.byteLength },
+        index: chunk.index,
+        plaintextBytes: chunk.data.byteLength,
         blobRecord,
       });
 
@@ -298,8 +270,6 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
         chunkIndex: chunk.index,
         chunkCount: chunkCount,
         plaintextBytes: chunk.data.byteLength,
-        ciphertextBytes: ciphertext.byteLength,
-        encryptMs: Number(encryptMs.toFixed(2)),
         requestMs: Number(requestMs.toFixed(2)),
         skippedAlreadyStored: alreadyStored,
         totalChunkMs: Number((performance.now() - chunkStartMs).toFixed(2)),
@@ -381,61 +351,17 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
       }
     }
 
-    const doneInOrder = Array.from(doneChunks.values()).sort(
-      (a, b) => a.manifestEntry.index - b.manifestEntry.index,
-    );
-    manifest.chunks = doneInOrder.map((c) => c.manifestEntry);
+    const doneInOrder = Array.from(doneChunks.values()).sort((a, b) => a.index - b.index);
     const uploadedBlobRecords: UploadedBlobTransportInput[] = doneInOrder
       .map((c) => c.blobRecord)
       .filter((record): record is UploadedBlobTransportInput => record !== null);
 
     store.updateUpload(realFileId, { status: UploadStatus.COMMITTING_MANIFEST });
 
-    const manifestEncryptStartMs = performance.now();
-    const encryptedManifest = await buildEncryptedManifest(prepared.rootFek, manifest);
-    const manifestEncryptMs = performance.now() - manifestEncryptStartMs;
-    const manifestBlobId = `${realFileId}:manifest`;
-    const manifestBuffer = encryptedManifest.buffer.slice(encryptedManifest.byteOffset, encryptedManifest.byteOffset + encryptedManifest.byteLength) as ArrayBuffer;
-    const manifestRequestStartMs = performance.now();
-    // Retried like any chunk: every byte is already up by this point, so losing
-    // the manifest to a transient blip would waste the whole transfer.
-    const manifestUploadResult = await withChunkRetry(
-      () => uploadBlobToApi(manifestBlobId, manifestBuffer, {
-        authToken,
-        extraHeaders: {
-          "X-Upload-Id": uploadId,
-          "X-Chunk-Index": "manifest",
-          "X-Chunk-Count": String(chunkCount),
-          "X-Client-Timestamp": new Date().toISOString(),
-        },
-      }),
-      controller.signal,
-    );
-    const manifestRequestMs = performance.now() - manifestRequestStartMs;
-
-    uploadedBlobRecords.push({
-      blobId: manifestUploadResult.blobId,
-      sizeBytes: manifestUploadResult.sizeBytes,
-      contentHash: manifestUploadResult.contentHash,
-      storageKind: manifestUploadResult.storageKind,
-      storagePath: manifestUploadResult.storagePath,
-      discordMessageId: manifestUploadResult.discordMessageId,
-      discordChannelId: manifestUploadResult.discordChannelId,
-      webhookId: manifestUploadResult.webhookId,
-    });
-
-    logUploadEvent({
-      type: "upload_manifest_timing",
-      uploadId,
-      fileId: realFileId,
-      manifestBlobId,
-      chunkCount: chunkCount,
-      encryptMs: Number(manifestEncryptMs.toFixed(2)),
-      requestMs: Number(manifestRequestMs.toFixed(2)),
-      ciphertextBytes: encryptedManifest.byteLength,
-    });
-
-    store.updateUpload(realFileId, { uploadedBlobs: uploadedBlobs + 1, bytesUploaded: file.size });
+    // "Manifest" concept simplified post-E2EE: the last uploaded chunk's
+    // blobId doubles as the manifest reference (chunk enumeration now comes
+    // from uploadStatus/chunkCount, not an encrypted manifest blob).
+    const manifestBlobId = `${realFileId}:chunk:${chunkCount - 1}`;
 
     const commitManifestStartMs = performance.now();
     // The one call that turns an UPLOADING row into a READY file, so a blip here
@@ -448,7 +374,7 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
         () => gqlRequest<{ commitManifest: { success: boolean } }>(COMMIT_MANIFEST, {
           fileId: realFileId,
           manifestBlobId,
-          totalCiphertextBytes: String(file.size),
+          totalBytes: String(file.size),
           chunkCount: chunkCount,
           blobs: uploadedBlobRecords,
         }, authToken),
@@ -498,48 +424,21 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
     const totalDurationMs = performance.now() - uploadStartMs;
     const totalWallMs = performance.now() - sessionStartMs;
     logUploadEvent({
-      type: "upload_session_finished",
-      uploadId,
-      fileId: realFileId,
-      totalDurationMs: Number(totalDurationMs.toFixed(2)),
-      totalWallMs: Number(totalWallMs.toFixed(2)),
-      totalBytes: file.size,
-      avgSpeedBps: totalDurationMs > 0 ? Math.round(file.size / (totalDurationMs / 1000)) : undefined,
-      endToEndSpeedBps: totalWallMs > 0 ? Math.round(file.size / (totalWallMs / 1000)) : undefined,
-      chunkCount: chunkCount,
-      totalBlobs,
-      success: true,
-    });
-
-    logUploadEvent({
-      type: "upload_session_summary",
+      type: "upload_session_completed",
       uploadId,
       fileId: realFileId,
       fileName: file.name,
-      totalBytes: file.size,
-      chunkCount: chunkCount,
-      totalBlobs,
-      uploadPipelineMs: Number(totalDurationMs.toFixed(2)),
+      fileSize: file.size,
+      chunkCount,
+      totalDurationMs: Number(totalDurationMs.toFixed(2)),
       totalWallMs: Number(totalWallMs.toFixed(2)),
-      uploadPipelineSpeedBps: totalDurationMs > 0 ? Math.round(file.size / (totalDurationMs / 1000)) : undefined,
-      endToEndSpeedBps: totalWallMs > 0 ? Math.round(file.size / (totalWallMs / 1000)) : undefined,
+      throughputMBps: Number((file.size / 1024 / 1024 / (totalDurationMs / 1000)).toFixed(2)),
     });
 
     store.updateUpload(realFileId, { status: UploadStatus.DONE });
-
     return realFileId;
   } catch (error) {
-    // Abort any stray concurrent workers so they don't silently keep uploading
-    // after the upload is already considered failed.
     if (!controller.signal.aborted) controller.abort();
-    logUploadEvent({
-      type: "upload_session_failed",
-      uploadId,
-      fileId: activeUploadId,
-      stage: "upload_pipeline",
-      elapsedMs: uploadStartMs !== null ? Number((performance.now() - uploadStartMs).toFixed(2)) : undefined,
-      error: error instanceof Error ? error.message : String(error),
-    });
     store.updateUpload(activeUploadId, { status: UploadStatus.FAILED });
     throw error;
   }

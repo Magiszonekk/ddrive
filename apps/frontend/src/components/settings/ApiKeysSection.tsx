@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { gqlRequest } from "../../lib/graphql.js";
-import { useAuthStore } from "../../stores/auth.js";
-import { prepareApiKey } from "../../lib/crypto.js";
 import { authInputClass, authLabelClass } from "../layout/AuthCard.js";
 
 const API_KEYS_QUERY = `
@@ -12,8 +10,8 @@ const API_KEYS_QUERY = `
 `;
 
 const CREATE_API_KEY_MUTATION = `
-  mutation CreateApiKey($name: String!, $authPart: String!, $wrappedARKByKey: String!, $wrappedARKIv: String!) {
-    createApiKey(name: $name, authPart: $authPart, wrappedARKByKey: $wrappedARKByKey, wrappedARKIv: $wrappedARKIv) {
+  mutation CreateApiKey($name: String!, $authPart: String!) {
+    createApiKey(name: $name, authPart: $authPart) {
       id
     }
   }
@@ -39,8 +37,19 @@ function formatWhen(value: string | null): string {
   return new Date(value).toLocaleDateString();
 }
 
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Mints a random API key secret entirely client-side — the server only ever sees a hash. */
+function generateApiKeySecret(): { secret: string; authPart: string } {
+  const authPart = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  return { secret: `ddv4_${authPart}`, authPart };
+}
+
 export function ApiKeysSection() {
-  const ark = useAuthStore((s) => s.ark);
   const queryClient = useQueryClient();
 
   const [showForm, setShowForm] = useState(false);
@@ -57,15 +66,9 @@ export function ApiKeysSection() {
 
   const createKey = useMutation({
     mutationFn: async (keyName: string) => {
-      if (!ark) throw new Error("Account key is locked — sign in again to create an API key");
-      const prepared = await prepareApiKey(ark);
-      await gqlRequest(CREATE_API_KEY_MUTATION, {
-        name: keyName,
-        authPart: prepared.authPart,
-        wrappedARKByKey: prepared.wrappedARKByKey,
-        wrappedARKIv: prepared.wrappedARKIv,
-      });
-      return prepared.secret;
+      const { secret, authPart } = generateApiKeySecret();
+      await gqlRequest(CREATE_API_KEY_MUTATION, { name: keyName, authPart });
+      return secret;
     },
     onSuccess: (secret) => {
       setFreshSecret(secret);
@@ -92,8 +95,7 @@ export function ApiKeysSection() {
         <div>
           <h2 className="mb-1 text-lg font-semibold text-ink">API Keys</h2>
           <p className="text-sm text-muted">
-            Let scripts read and write files in this account. Keys cannot change your password or read your
-            account key, and the web app keeps working alongside them.
+            Let scripts read and write files in this account.
           </p>
         </div>
         {!showForm && (
@@ -114,10 +116,6 @@ export function ApiKeysSection() {
         <div className="mt-4 rounded-card border border-accent bg-accent/10 p-4">
           <p className="mb-2 text-sm font-medium text-ink">
             Copy this key now — it is shown once and cannot be recovered.
-          </p>
-          <p className="mb-3 text-xs text-muted">
-            Half of it never reaches the server, so nobody can show it to you again. Losing it means creating a
-            new key.
           </p>
           <code className="block break-all rounded-md bg-paper-2 p-3 font-mono text-xs text-ink">
             {freshSecret}

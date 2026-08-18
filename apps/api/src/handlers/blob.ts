@@ -16,6 +16,7 @@ import {
 import { getConfiguredReplicaKinds } from "../storage/replica-pools.js";
 import { writeThroughReplication } from "../storage/replication-worker.js";
 import { resolveRequestAuth, LeakedApiKeyError } from "../middleware/auth.js";
+import { encryptServerSide, decryptServerSide } from "../storage/server-crypto.js";
 
 type BlobRecord = {
   blobId: string;
@@ -167,7 +168,8 @@ export async function handleBlobContent(req: Request, params: { blobId: string }
   }
 
   try {
-    const bytes = await readBlobBytes(blob as BlobRecord);
+    const encrypted = await readBlobBytes(blob as BlobRecord);
+    const bytes = decryptServerSide(encrypted);
     const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     return new Response(body, {
       status: 200,
@@ -230,7 +232,8 @@ export async function handleBlobContentForShare(req: Request, params: { blobId: 
   }
 
   try {
-    const bytes = await readBlobBytes(blob as BlobRecord);
+    const encrypted = await readBlobBytes(blob as BlobRecord);
+    const bytes = decryptServerSide(encrypted);
     const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     return new Response(body, {
       status: 200,
@@ -271,8 +274,15 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
     });
 
     const readBodyStartMs = performance.now();
-    const content = normalizeBlobUploadBody(await req.arrayBuffer());
+    const plaintext = normalizeBlobUploadBody(await req.arrayBuffer());
     const readBodyMs = performance.now() - readBodyStartMs;
+
+    // Client sends plaintext now (Phase 1: server-side chunk encryption).
+    // The server encrypts before it ever touches the storage provider, so
+    // Discord/Telegram only ever see ciphertext.
+    const encryptStartMs = performance.now();
+    const content = encryptServerSide(plaintext);
+    const encryptMs = performance.now() - encryptStartMs;
 
     const sizeBytes = BigInt(content.byteLength);
 
@@ -394,6 +404,7 @@ export async function handleBlobUpload(req: Request, params: { blobId: string })
       limiterInFlight: written.diagnostics?.limiterInFlight ?? null,
       sizeBytes: content.byteLength,
       readBodyMs: Number(readBodyMs.toFixed(2)),
+      encryptMs: Number(encryptMs.toFixed(2)),
       hashMs: Number(hashMs.toFixed(2)),
       storeMs: Number(storeMs.toFixed(2)),
       totalMs: Number((performance.now() - requestStartMs).toFixed(2)),
