@@ -57,9 +57,9 @@ export function SharedFile() {
   useEffect(() => {
     if (!shareId) return;
 
-    const token = window.location.hash.replace(/^#/, "");
+    const token = new URLSearchParams(window.location.search).get("t") ?? window.location.hash.replace(/^#/, "");
     if (!token) {
-      setError("Share token not found in URL fragment");
+      setError("Share token not found in URL");
       return;
     }
 

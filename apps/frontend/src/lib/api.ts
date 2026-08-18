@@ -67,6 +67,29 @@ export async function uploadBlobToApi(
   return response.json() as Promise<BlobUploadResponse>;
 }
 
+/** Anonymous chunk upload (Phase 6) — no auth header, gated by fileId ownership server-side. */
+export async function uploadAnonymousBlobToApi(
+  blobId: string,
+  data: ArrayBuffer | Uint8Array,
+  extraHeaders: Record<string, string> = {},
+): Promise<BlobUploadResponse> {
+  const response = await fetch(`${API_BASE}/api/anon-blob/${blobId}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      ...extraHeaders,
+    },
+    body: toUploadBody(data),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: "Blob upload failed" }));
+    throw new BlobUploadError((error as { error: string }).error, response.status);
+  }
+
+  return response.json() as Promise<BlobUploadResponse>;
+}
+
 export async function fetchBlobDescriptor(blobId: string): Promise<{
   blobId: string;
   sizeBytes: string;

@@ -68,6 +68,15 @@ model File {
   createdAt             DateTime    @default(now())
   updatedAt             DateTime    @updatedAt
   deletedAt             DateTime?
+  // Anonymous uploads (Phase 6, non-E2EE fork): owned by a stable system
+  // user (see getSystemUserId in middleware/auth.ts) so every ownerUserId-
+  // scoped query keeps working unmodified. isAnonymous + expiresAt mark it
+  // for the TTL sweep; anonSessionId is a convenience grouping key only
+  // (browser localStorage UUID), never an auth mechanism — see
+  // docs/hermes/concept.md section 4.7.
+  isAnonymous           Boolean     @default(false)
+  anonSessionId         String?
+  expiresAt             DateTime?
 
   owner        User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   parentFolder Folder?  @relation(fields: [parentFolderId], references: [id], onDelete: SetNull)
@@ -75,6 +84,8 @@ model File {
 
   @@index([ownerUserId, parentFolderId, status])
   @@index([ownerUserId, deletedAt])
+  @@index([isAnonymous, expiresAt])
+  @@index([anonSessionId])
 }
 
 enum FileStatus {
@@ -183,12 +194,35 @@ model Share {
   createdAt    DateTime    @default(now())
   revokedAt    DateTime?
 
-  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  file  File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  owner   User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  file    File          @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  reports ShareReport[]
 
   @@index([ownerUserId, status])
   @@index([expiresAt])
   @@index([fileId])
+}
+
+model ShareReport {
+  id        String       @id @default(cuid())
+  shareId   String
+  reason    String
+  note      String?
+  reporterIp String?
+  status    ReportStatus @default(OPEN)
+  createdAt DateTime     @default(now())
+  resolvedAt DateTime?
+
+  share Share @relation(fields: [shareId], references: [shareId], onDelete: Cascade)
+
+  @@index([shareId, status])
+  @@index([status, createdAt])
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
 }
 
 enum ShareType {

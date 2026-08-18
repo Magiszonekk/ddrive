@@ -22,6 +22,7 @@ export default defineConfig({
     proxy: {
       "/api": `http://localhost:${apiPort}`,
       "/graphql": `http://localhost:${apiPort}`,
+      "/s": `http://localhost:${apiPort}`,
     },
   },
   preview: {
@@ -31,6 +32,7 @@ export default defineConfig({
     proxy: {
       "/api": `http://localhost:${apiPort}`,
       "/graphql": `http://localhost:${apiPort}`,
+      "/s": `http://localhost:${apiPort}`,
     },
   },
   build: {

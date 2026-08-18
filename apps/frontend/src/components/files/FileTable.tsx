@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { ITEM_DRAG_TYPE, encodeDragPayload, decodeDragPayload } from "../../lib/dragTypes.js";
+import { Thumbnail } from "./Thumbnail.js";
 import {
   ChevronDown,
   ChevronLeft,
@@ -11,6 +12,8 @@ import {
   Folder,
   FolderDown,
   GripVertical,
+  LayoutGrid,
+  List,
   MoreVertical,
   Pencil,
   Play,
@@ -26,6 +29,7 @@ export interface FileItem {
   size: string;
   chunkSize: number;
   chunkCount: number;
+  thumbnailBlobId?: string | null;
   status: string;
   createdAt: string;
 }
@@ -59,8 +63,19 @@ interface Props {
 
 type SortKey = "name" | "size" | "date";
 type SortDir = "asc" | "desc";
+type ViewMode = "list" | "grid";
 
 const PAGE_SIZE = 20;
+const VIEW_MODE_STORAGE_KEY = "ddv4-view-mode";
+
+function loadViewMode(): ViewMode {
+  try {
+    const stored = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    return stored === "grid" ? "grid" : "list";
+  } catch {
+    return "list";
+  }
+}
 
 export function FileTable({
   files, folders, onDownload, onPreview, onPlay, onDelete, onShare,
@@ -71,9 +86,16 @@ export function FileTable({
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "date", dir: "desc" });
   const [page, setPage] = useState(1);
+  const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
   const [draggingOver, setDraggingOver] = useState<string | null>(null);
   // Counter per folder to handle nested enter/leave events
   const dragCounters = useRef<Record<string, number>>({});
+
+  const setViewModePersisted = (mode: ViewMode) => {
+    setViewMode(mode);
+    try { localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode); } catch { /* ignore */ }
+  };
+
 
   const handleSort = (key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
@@ -139,18 +161,38 @@ export function FileTable({
 
   return (
     <div className="space-y-3">
-      <div className="relative">
-        <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-        <input
-          type="text"
-          placeholder="Search files…"
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setPage(1); }}
-          className="h-11 w-full rounded-md border border-rule-2 bg-paper py-3 pl-10 pr-4 text-sm text-ink outline-2 outline-offset-1 outline-transparent transition-colors duration-short ease-out placeholder:text-muted hover:bg-paper-2 focus:bg-paper focus:outline-focus"
-        />
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            type="text"
+            placeholder="Search files…"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setPage(1); }}
+            className="h-11 w-full rounded-md border border-rule-2 bg-paper py-3 pl-10 pr-4 text-sm text-ink outline-2 outline-offset-1 outline-transparent transition-colors duration-short ease-out placeholder:text-muted hover:bg-paper-2 focus:bg-paper focus:outline-focus"
+          />
+        </div>
+        <div className="hidden shrink-0 overflow-hidden rounded-md border border-rule-2 md:flex">
+          <button
+            onClick={() => setViewModePersisted("list")}
+            title="List view"
+            aria-pressed={viewMode === "list"}
+            className={`flex h-11 w-11 items-center justify-center transition-colors duration-short ease-out ${viewMode === "list" ? "bg-paper-3 text-ink" : "text-muted hover:bg-paper-2 hover:text-ink"}`}
+          >
+            <List size={16} />
+          </button>
+          <button
+            onClick={() => setViewModePersisted("grid")}
+            title="Grid view"
+            aria-pressed={viewMode === "grid"}
+            className={`flex h-11 w-11 items-center justify-center transition-colors duration-short ease-out ${viewMode === "grid" ? "bg-paper-3 text-ink" : "text-muted hover:bg-paper-2 hover:text-ink"}`}
+          >
+            <LayoutGrid size={16} />
+          </button>
+        </div>
       </div>
 
-      {/* Mobile layout */}
+      {/* Mobile layout — always card list regardless of viewMode */}
       <div className="space-y-3 md:hidden">
         {isEmpty && <EmptyState />}
         {isFilteredEmpty && <FilteredEmptyState />}
@@ -178,12 +220,59 @@ export function FileTable({
         ))}
       </div>
 
-      {/* Desktop table */}
-      <div className="hidden overflow-hidden rounded-card border border-rule bg-paper md:block">
+      {/* Desktop grid view */}
+      {viewMode === "grid" && (
+        <div className="hidden md:block">
+          {isEmpty && <EmptyState />}
+          {isFilteredEmpty && <FilteredEmptyState />}
+          {(folders.length > 0 || paginated.length > 0) && (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {folders.map((folder) => (
+                <button
+                  key={`folder-grid-${folder.id}`}
+                  onClick={() => navigate(`/folder/${folder.id}`)}
+                  {...folderDragHandlers(folder.id)}
+                  className={`group flex flex-col items-center gap-2 rounded-card border p-4 text-center transition-colors duration-short ease-out ${isOver(folder.id) ? "border-accent/60 bg-accent/10" : "border-rule bg-paper hover:border-rule-2 hover:bg-paper-2"}`}
+                >
+                  <Folder size={32} className={isOver(folder.id) ? "text-accent" : "text-muted"} />
+                  <span className="w-full truncate text-sm text-ink">{folder.name}</span>
+                  <span className="font-mono text-xs tabular-nums text-muted">{folder.fileCount} items</span>
+                </button>
+              ))}
+              {paginated.map((file) => (
+                <div
+                  key={`file-grid-${file.id}`}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(DRAG_TYPE, encodeDrag({ type: "file", id: file.id }));
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  className="group flex flex-col overflow-hidden rounded-card border border-rule bg-paper transition-colors duration-short ease-out hover:border-rule-2"
+                >
+                  <div className="relative aspect-square w-full overflow-hidden bg-paper-2">
+                    <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} />
+                    <div className="absolute right-1.5 top-1.5 opacity-0 transition-opacity duration-short ease-out group-hover:opacity-100">
+                      <FileActionMenu fileName={file.name} onDownload={() => onDownload(file)} onPlay={onPlay && file.status === "READY" && file.mimeType.startsWith("video/") ? () => onPlay(file) : undefined} onShare={onShare && file.status === "READY" ? () => onShare(file) : undefined} onDelete={onDelete ? () => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); } : undefined} />
+                    </div>
+                  </div>
+                  <div className="p-2.5">
+                    <p className="truncate text-xs font-medium text-ink" title={file.name}>{file.name}</p>
+                    <p className="mt-0.5 font-mono text-[11px] tabular-nums text-muted">{formatSize(file.size)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Desktop table (list view) */}
+      <div className={`hidden overflow-hidden rounded-card border border-rule bg-paper ${viewMode === "list" ? "md:block" : ""}`}>
         <table className="w-full">
           <thead>
             <tr className="border-b border-rule">
               <th className="w-8" />
+              <th className="w-12" />
               <SortHeader label="Name" sortKey="name" current={sort} onSort={handleSort} />
               <SortHeader label="Size" sortKey="size" current={sort} onSort={handleSort} />
               <SortHeader label="Date" sortKey="date" current={sort} onSort={handleSort} />
@@ -192,7 +281,7 @@ export function FileTable({
           </thead>
           <tbody>
             {isEmpty && (
-              <tr><td colSpan={5} className="px-4 py-16 text-center text-sm text-muted"><EmptyCopy /></td></tr>
+              <tr><td colSpan={6} className="px-4 py-16 text-center text-sm text-muted"><EmptyCopy /></td></tr>
             )}
 
             {folders.map((folder) => (
@@ -209,9 +298,11 @@ export function FileTable({
                 <td className="px-2 py-3 text-muted">
                   <GripVertical size={14} />
                 </td>
+                <td className="px-2 py-3">
+                  <Folder size={18} className={isOver(folder.id) ? "text-accent" : "text-muted"} />
+                </td>
                 <td className="cursor-pointer px-4 py-3 text-ink" onClick={() => navigate(`/folder/${folder.id}`)}>
                   <span className="inline-flex items-center gap-2">
-                    <Folder size={16} className={isOver(folder.id) ? "text-accent" : "text-muted"} />
                     {folder.name}
                     {isOver(folder.id) && <span className="ml-1 text-xs text-accent">Drop here</span>}
                   </span>
@@ -233,7 +324,7 @@ export function FileTable({
             ))}
 
             {paginated.length === 0 && !isEmpty && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-muted">No files match your search</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-muted">No files match your search</td></tr>
             )}
 
             {paginated.map((file) => (
@@ -248,6 +339,11 @@ export function FileTable({
               >
                 <td className="px-2 py-3 text-muted cursor-grab active:cursor-grabbing">
                   <GripVertical size={14} />
+                </td>
+                <td className="px-2 py-3">
+                  <div className="h-9 w-9 overflow-hidden rounded-md bg-paper-2">
+                    <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} className="h-full w-full object-cover" />
+                  </div>
                 </td>
                 <td className="px-4 py-3 text-ink">{file.name}</td>
                 <td className="px-4 py-3 text-sm text-muted"><span className="font-mono tabular-nums">{formatSize(file.size)}</span></td>

@@ -92,3 +92,70 @@ export async function accessShare(
     allowPreview: share.allowPreview,
   };
 }
+
+/**
+ * Same lookup as accessShare, but for the server-rendered OG/embed page
+ * (apps/api/src/handlers/share-page.ts) — no view-count increment (that
+ * page loads on every unfurl bot hit, would inflate counts meaninglessly),
+ * and it needs the raw File row (not the GraphQL DTO shape).
+ */
+export async function resolveShareForPage(shareId: string, presentedToken: string) {
+  const share = await db.share.findUnique({ where: { shareId }, include: { file: true } });
+  if (!share) return null;
+  if (share.status !== "ACTIVE") return null;
+  if (share.expiresAt && share.expiresAt < new Date()) return null;
+  if (share.maxViews !== null && share.maxViews !== undefined && share.viewCount >= share.maxViews) return null;
+
+  const presented = Buffer.from(hashToken(presentedToken), "hex");
+  const stored = Buffer.from(share.tokenHash, "hex");
+  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) return null;
+
+  return share;
+}
+
+// === Claim flow (Phase 6): anonymous share -> logged-in user's account ===
+
+export async function claimShare(userId: string, shareId: string, presentedToken: string): Promise<boolean> {
+  const share = await resolveShareForPage(shareId, presentedToken);
+  if (!share) throw new Error("Share not found or expired");
+  if (!share.file.isAnonymous) throw new Error("This file is already owned by an account");
+
+  await db.file.update({
+    where: { id: share.fileId },
+    data: { ownerUserId: userId, isAnonymous: false, anonSessionId: null, expiresAt: null },
+  });
+  return true;
+}
+
+// === Report/abuse flow ===
+
+export async function reportShare(
+  shareId: string,
+  reason: string,
+  note: string | null,
+  reporterIp: string | null,
+): Promise<boolean> {
+  const share = await db.share.findUnique({ where: { shareId } });
+  if (!share) throw new Error("Share not found");
+
+  await db.shareReport.create({
+    data: { shareId, reason, note, reporterIp },
+  });
+  return true;
+}
+
+export async function listOpenReports() {
+  return db.shareReport.findMany({
+    where: { status: "OPEN" },
+    orderBy: { createdAt: "desc" },
+    include: { share: { include: { file: true } } },
+  });
+}
+
+export async function resolveReport(reportId: string, status: "RESOLVED" | "DISMISSED"): Promise<boolean> {
+  await db.shareReport.update({
+    where: { id: reportId },
+    data: { status, resolvedAt: new Date() },
+  });
+  return true;
+}
