@@ -51,7 +51,48 @@ export async function handleSharePage(req: Request, params: { shareId: string })
     });
   }
 
+  // Folder shares render a simple shared-folder page (no OG media/preview —
+  // the interactive browse + ZIP download lives in the SPA at /s/:shareId).
+  if (share.shareType === "FOLDER") {
+    const name = "Shared folder";
+    const pageUrl = `${origin}/s/${share.shareId}?t=${encodeURIComponent(token)}`;
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${escapeHtml(name)} — ddrive</title>
+<meta property="og:title" content="${escapeHtml(name)}" />
+<meta property="og:site_name" content="ddrive" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="${escapeHtml(pageUrl)}" />
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 24px 16px; background: #0b0d10; color: #e8eaed; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; }
+  .card { max-width: 480px; width: 100%; text-align: center; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+  .meta { color: #9aa0a6; font-size: 13px; margin-bottom: 20px; }
+  .btn { display: inline-block; background: #6366f1; color: white; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 500; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>📁 ${escapeHtml(name)}</h1>
+    <p class="meta">A shared folder on ddrive</p>
+    <a class="btn" href="${escapeHtml(pageUrl)}">Open folder</a>
+  </div>
+</body>
+</html>`;
+    return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }
+
   const file = share.file;
+  if (!file) {
+    return new Response(renderErrorPage("This share link is invalid."), {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
   const name = file.name ?? "shared-file";
   const mimeType = file.mimeType ?? "application/octet-stream";
   const pageUrl = `${origin}/s/${share.shareId}?t=${encodeURIComponent(token)}`;
@@ -228,10 +269,10 @@ export async function handleSharePageMedia(req: Request, params: { shareId: stri
   const url = new URL(req.url);
   const token = url.searchParams.get("t") ?? "";
   const share = await resolveShareForPage(params.shareId, token);
-  if (!share || !share.allowPreview) return new Response("Not found", { status: 404 });
+  if (!share || !share.allowPreview || share.shareType !== "FILE" || !share.file) return new Response("Not found", { status: 404 });
 
   try {
-    const bytes = await fetchAllChunksDecrypted(share.fileId, share.file.ownerUserId, share.file.chunkCount);
+    const bytes = await fetchAllChunksDecrypted(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
     return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
       headers: { "Content-Type": share.file.mimeType ?? "application/octet-stream", "Cache-Control": "private, max-age=300" },
     });
@@ -245,7 +286,7 @@ export async function handleSharePagePoster(req: Request, params: { shareId: str
   const url = new URL(req.url);
   const token = url.searchParams.get("t") ?? "";
   const share = await resolveShareForPage(params.shareId, token);
-  if (!share || !share.allowPreview || !share.file.thumbnailBlobId) return new Response("Not found", { status: 404 });
+  if (!share || !share.allowPreview || share.shareType !== "FILE" || !share.file?.thumbnailBlobId) return new Response("Not found", { status: 404 });
 
   const blob = await db.blobTransport.findUnique({ where: { blobId: share.file.thumbnailBlobId }, include: { placements: true } });
   if (!blob) return new Response("Not found", { status: 404 });
@@ -266,10 +307,10 @@ export async function handleSharePageDownload(req: Request, params: { shareId: s
   const url = new URL(req.url);
   const token = url.searchParams.get("t") ?? "";
   const share = await resolveShareForPage(params.shareId, token);
-  if (!share || !share.allowContent) return new Response("Not found", { status: 404 });
+  if (!share || !share.allowContent || share.shareType !== "FILE" || !share.file) return new Response("Not found", { status: 404 });
 
   try {
-    const bytes = await fetchAllChunksDecrypted(share.fileId, share.file.ownerUserId, share.file.chunkCount);
+    const bytes = await fetchAllChunksDecrypted(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
     const fileName = share.file.name ?? "download";
     return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
       headers: {
