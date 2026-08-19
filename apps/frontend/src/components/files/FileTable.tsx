@@ -63,8 +63,8 @@ interface Props {
   onMoveFolder?: (folderId: string, targetFolderId: string) => void;
   onExtendTtl?: (file: FileItem) => void;
   anonSessionId?: string;
-  /** Folder open handler. Defaults to authed /folder/:id route; anon passes a /drive?folder= handler. */
   onOpenFolder?: (folderId: string) => void;
+  onShareFolder?: (folder: FolderItem) => void;
 }
 
 type SortKey = "name" | "size" | "date";
@@ -86,7 +86,7 @@ function loadViewMode(): ViewMode {
 export function FileTable({
   files, folders, onDownload, onPreview, onPlay, onDelete, onShare,
   onDownloadFolder, onRenameFolder, onDeleteFolder,
-  onMoveFile, onMoveFolder, onExtendTtl, anonSessionId, onOpenFolder,
+  onMoveFile, onMoveFolder, onExtendTtl, anonSessionId, onOpenFolder, onShareFolder,
 }: Props) {
   const navigate = useNavigate();
   const openFolder = onOpenFolder ?? ((id: string) => navigate(`/folder/${id}`));
@@ -213,6 +213,7 @@ export function FileTable({
             onDownload={onDownloadFolder ? () => onDownloadFolder(folder) : undefined}
             onRename={onRenameFolder ? () => onRenameFolder(folder) : undefined}
             onDelete={onDeleteFolder ? () => onDeleteFolder(folder) : undefined}
+            onShare={onShareFolder ? () => onShareFolder(folder) : undefined}
           />
         ))}
         {paginated.map((file) => (
@@ -235,16 +236,25 @@ export function FileTable({
           {(folders.length > 0 || paginated.length > 0) && (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {folders.map((folder) => (
-                <button
+                <div
                   key={`folder-grid-${folder.id}`}
                   onClick={() => openFolder(folder.id)}
                   {...folderDragHandlers(folder.id)}
-                  className={`group flex flex-col items-center gap-2 rounded-card border p-4 text-center transition-colors duration-short ease-out ${isOver(folder.id) ? "border-accent/60 bg-accent/10" : "border-rule bg-paper hover:border-rule-2 hover:bg-paper-2"}`}
+                  className={`group relative flex cursor-pointer flex-col items-center gap-2 rounded-card border p-4 text-center transition-colors duration-short ease-out ${isOver(folder.id) ? "border-accent/60 bg-accent/10" : "border-rule bg-paper hover:border-rule-2 hover:bg-paper-2"}`}
                 >
                   <Folder size={32} className={isOver(folder.id) ? "text-accent" : "text-muted"} />
                   <span className="w-full truncate text-sm text-ink">{folder.name}</span>
                   <span className="font-mono text-xs tabular-nums text-muted">{folder.fileCount} items</span>
-                </button>
+                  {onShareFolder && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onShareFolder(folder); }}
+                      title="Share"
+                      className="absolute right-1.5 top-1.5 rounded-md p-1.5 text-muted opacity-0 transition-opacity duration-short ease-out hover:bg-paper-2 hover:text-ink group-hover:opacity-100"
+                    >
+                      <Share2 size={15} />
+                    </button>
+                  )}
+                </div>
               ))}
               {paginated.map((file) => (
                 <div
@@ -324,6 +334,7 @@ export function FileTable({
                   <div className="flex items-center justify-end gap-1">
                     {onDownloadFolder && <IconButton onClick={() => onDownloadFolder(folder)} title="Download as ZIP" className="text-accent hover:bg-accent/10"><FolderDown size={15} /></IconButton>}
                     {onRenameFolder && <IconButton onClick={() => onRenameFolder(folder)} title="Rename" className="text-muted hover:bg-paper-2 hover:text-ink"><Pencil size={15} /></IconButton>}
+                    {onShareFolder && <IconButton onClick={() => onShareFolder(folder)} title="Share" className="text-muted hover:bg-paper-2 hover:text-ink"><Share2 size={15} /></IconButton>}
                     {onDeleteFolder && <IconButton onClick={() => onDeleteFolder(folder)} title="Delete" className="text-error hover:bg-error/10 hover:text-error"><Trash2 size={15} /></IconButton>}
                   </div>
                 </td>
@@ -394,7 +405,7 @@ function EmptyCopy() { return <><p className="mb-1 text-base text-ink-2">No file
 function FilteredEmptyState() { return <div className="rounded-card border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">No files match your search</div>; }
 
 function FolderCard({
-  folder, isOver, dragHandlers, onOpen, onDownload, onRename, onDelete,
+  folder, isOver, dragHandlers, onOpen, onDownload, onRename, onDelete, onShare,
 }: {
   folder: FolderItem;
   isOver: boolean;
@@ -403,6 +414,7 @@ function FolderCard({
   onDownload?: () => void;
   onRename?: () => void;
   onDelete?: () => void;
+  onShare?: () => void;
 }) {
   return (
     <div
@@ -432,13 +444,14 @@ function FolderCard({
           onDownload={onDownload}
           onRename={onRename}
           onDelete={onDelete}
+          onShare={onShare}
         />
       </div>
     </div>
   );
 }
 
-function FolderActionMenu({ folderName, onOpen, onDownload, onRename, onDelete }: { folderName: string; onOpen: () => void; onDownload?: () => void; onRename?: () => void; onDelete?: () => void }) {
+function FolderActionMenu({ folderName, onOpen, onDownload, onRename, onDelete, onShare }: { folderName: string; onOpen: () => void; onDownload?: () => void; onRename?: () => void; onDelete?: () => void; onShare?: () => void }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -450,6 +463,7 @@ function FolderActionMenu({ folderName, onOpen, onDownload, onRename, onDelete }
   type Action = { label: string; icon: React.FC<{ size?: number }>; onClick: () => void; danger: boolean };
   const actions: Action[] = [
     { label: "Open", icon: Folder, onClick: onOpen, danger: false },
+    ...(onShare ? [{ label: "Share", icon: Share2, onClick: onShare, danger: false }] : []),
     ...(onDownload ? [{ label: "Download as ZIP", icon: FolderDown, onClick: onDownload, danger: false }] : []),
     ...(onRename ? [{ label: "Rename", icon: Pencil, onClick: onRename, danger: false }] : []),
     ...(onDelete ? [{ label: "Delete", icon: Trash2, onClick: onDelete, danger: true }] : []),

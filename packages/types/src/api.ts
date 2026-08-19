@@ -60,9 +60,21 @@ export interface CreateFileShareRequest {
   maxViews?: number;
 }
 
+export interface SharedFolderItem {
+  id: string;
+  name: string | null;
+  mimeType: string | null;
+  size: string;
+  thumbnailBlobId: string | null;
+  chunkCount: number;
+  kind: "FILE" | "FOLDER";
+}
+
 export interface ShareAccessResponse {
   shareId: string;
+  shareType: "FILE" | "FOLDER";
   fileId: string;
+  folderId: string | null;
   name: string | null;
   mimeType: string | null;
   primaryManifestBlobId: string | null;
@@ -72,6 +84,7 @@ export interface ShareAccessResponse {
   chunkCount: number;
   allowContent: boolean;
   allowPreview: boolean;
+  folderContents?: SharedFolderItem[];
 }
 
 export type BlobStorageKindDto = "LOCAL" | "DISCORD" | "TELEGRAM";

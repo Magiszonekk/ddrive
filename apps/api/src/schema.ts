@@ -132,7 +132,9 @@ export function buildSchema() {
 
       type ShareAccess {
         shareId: ID!
+        shareType: String!
         fileId: ID!
+        folderId: ID
         name: String
         mimeType: String
         primaryManifestBlobId: String
@@ -142,6 +144,17 @@ export function buildSchema() {
         chunkCount: Int!
         allowContent: Boolean!
         allowPreview: Boolean!
+        folderContents: [SharedFolderItem!]
+      }
+
+      type SharedFolderItem {
+        id: ID!
+        name: String
+        mimeType: String
+        size: String!
+        thumbnailBlobId: String
+        chunkCount: Int!
+        kind: String!
       }
 
       type ShareInfo {
@@ -344,6 +357,7 @@ export function buildSchema() {
 
         revokeShare(shareId: ID!): Boolean!
         createAnonymousShare(fileId: ID!, allowContent: Boolean!, allowPreview: Boolean): ShareCreateResult!
+        createAnonymousFolderShare(folderId: ID!, allowContent: Boolean!, allowPreview: Boolean): ShareCreateResult!
         reportShare(shareId: ID!, reason: String!, note: String): Boolean!
         claimShare(shareId: ID!, token: String!): Boolean!
         # Anonymous workspace (Phase 8) — no auth; scoped by anonSessionId.
@@ -673,6 +687,10 @@ export function buildSchema() {
         createAnonymousShare: async (_parent: unknown, args: { fileId: string; allowContent: boolean; allowPreview?: boolean }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
           return sharingResolvers.createAnonymousShare(args.fileId, args.allowContent, args.allowPreview ?? false);
+        },
+        createAnonymousFolderShare: async (_parent: unknown, args: { folderId: string; allowContent: boolean; allowPreview?: boolean }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return sharingResolvers.createAnonymousFolderShare(args.folderId, args.allowContent, args.allowPreview ?? false);
         },
         reportShare: async (_parent: unknown, args: { shareId: string; reason: string; note?: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");

@@ -181,6 +181,7 @@ model Folder {
   parent       Folder?  @relation("FolderTree", fields: [parentFolderId], references: [id], onDelete: SetNull)
   childFolders Folder[] @relation("FolderTree")
   files        File[]
+  shares       Share[]
 
   @@index([ownerUserId, parentFolderId])
   @@index([isAnonymous, expiresAt])
@@ -191,6 +192,7 @@ model Share {
   shareId      String      @id @default(cuid())
   ownerUserId  String
   fileId       String
+  folderId     String?
   shareType    ShareType   @default(FILE)
   tokenHash    String      @unique
   allowContent Boolean     @default(true)
@@ -204,11 +206,14 @@ model Share {
 
   owner   User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   file    File          @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  folder  Folder?       @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
   reports ShareReport[]
 
   @@index([ownerUserId, status])
   @@index([expiresAt])
   @@index([fileId])
+  @@index([folderId])
 }
 
 model ShareReport {
@@ -235,6 +240,7 @@ enum ReportStatus {
 
 enum ShareType {
   FILE
+  FOLDER
 }
 
 enum ShareStatus {

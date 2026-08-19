@@ -79,6 +79,33 @@ export async function createAnonymousShare(
   return { shareId: share.shareId, token };
 }
 
+/** Anonymous folder share (Phase 9): mint a share for an entire folder. */
+export async function createAnonymousFolderShare(
+  folderId: string,
+  allowContent: boolean,
+  allowPreview: boolean,
+): Promise<{ shareId: string; token: string }> {
+  const folder = await db.folder.findFirst({
+    where: { id: folderId, isAnonymous: true },
+  });
+  if (!folder) throw new Error("Folder not found or not anonymous");
+
+  const token = randomBytes(32).toString("base64url");
+  const share = await db.share.create({
+    data: {
+      ownerUserId: folder.ownerUserId,
+      fileId: "", // Folder shares have no single file; kept for schema compatibility
+      folderId,
+      shareType: "FOLDER" as const,
+      tokenHash: hashToken(token),
+      allowContent,
+      allowPreview,
+    },
+  });
+
+  return { shareId: share.shareId, token };
+}
+
 export async function getShares(ownerUserId: string, fileId: string) {
   return db.share.findMany({
     where: { ownerUserId, fileId },
@@ -111,9 +138,51 @@ export async function accessShare(
     data: { viewCount: { increment: 1 } },
   });
 
+  // Folder shares: return the folder tree's immediate contents.
+  if (share.shareType === "FOLDER" && share.folderId) {
+    const folder = await db.folder.findUnique({ where: { id: share.folderId } });
+    const [childFolders, childFiles] = await Promise.all([
+      db.folder.findMany({
+        where: { parentFolderId: share.folderId },
+        select: { id: true, name: true },
+        orderBy: { createdAt: "asc" },
+      }),
+      db.file.findMany({
+        where: { parentFolderId: share.folderId, deletedAt: null, status: "READY" },
+        select: { id: true, name: true, mimeType: true, totalBytes: true, thumbnailBlobId: true, chunkCount: true },
+        orderBy: { createdAt: "asc" },
+      }),
+    ]);
+    const contents: Array<{
+      id: string; name: string | null; mimeType: string | null;
+      size: string; thumbnailBlobId: string | null; chunkCount: number; kind: "FILE" | "FOLDER";
+    }> = [
+      ...childFolders.map((f) => ({ id: f.id, name: f.name, mimeType: null, size: "0", thumbnailBlobId: null, chunkCount: 0, kind: "FOLDER" as const })),
+      ...childFiles.map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType, size: f.totalBytes.toString(), thumbnailBlobId: f.thumbnailBlobId, chunkCount: f.chunkCount, kind: "FILE" as const })),
+    ];
+    return {
+      shareId: share.shareId,
+      shareType: "FOLDER",
+      fileId: "",
+      folderId: share.folderId,
+      name: folder?.name ?? "Shared folder",
+      mimeType: null,
+      primaryManifestBlobId: null,
+      previewBlobId: null,
+      thumbnailBlobId: null,
+      posterBlobId: null,
+      chunkCount: 0,
+      allowContent: share.allowContent,
+      allowPreview: share.allowPreview,
+      folderContents: contents,
+    };
+  }
+
   return {
     shareId: share.shareId,
+    shareType: "FILE",
     fileId: share.fileId,
+    folderId: null,
     name: share.file.name,
     mimeType: share.file.mimeType,
     primaryManifestBlobId: share.file.primaryManifestBlobId,
