@@ -173,9 +173,9 @@ export async function handleBlobContent(req: Request, params: { blobId: string }
     // Anonymous path (Phase 8): no JWT — scope by X-Anon-Session-Id.
     const anonSessionId = req.headers.get("x-anon-session-id");
     if (!anonSessionId) return response; // 401 from authOrResponse
-    // blobId is `${fileId}:chunk:N` — derive the owning file and verify it's
-    // an anonymous file belonging to this session.
-    const fileId = params.blobId.split(":chunk:")[0];
+    // blobId is `${fileId}:chunk:N` (chunks) or `${fileId}:thumb` (thumbnail) —
+    // derive the owning file id as the segment before the first colon.
+    const fileId = params.blobId.split(":")[0];
     const file = await db.file.findFirst({
       where: { id: fileId, ownerUserId: blob.ownerUserId, isAnonymous: true, anonSessionId, deletedAt: null },
     });
