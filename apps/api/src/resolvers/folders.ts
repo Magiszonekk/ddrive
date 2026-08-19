@@ -1,6 +1,8 @@
 // ddrive v4 — Folder resolvers
 
 import { db, Prisma } from "@ddv4/database";
+import { getSystemUserId } from "../middleware/auth.js";
+import { config } from "@ddv4/config";
 
 interface FolderWithStats {
   id: string;
@@ -11,6 +13,17 @@ interface FolderWithStats {
   totalSizeBytes: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface AnonymousFolderWithStats {
+  id: string;
+  parentFolderId: string | null;
+  name: string;
+  itemCount: number;
+  totalSizeBytes: string;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date | null;
 }
 
 async function enrichFolders(
@@ -186,4 +199,175 @@ export async function getFolderPath(ownerUserId: string, folderId: string) {
   }
 
   return enrichFolders(ownerUserId, path);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Anonymous workspace (Phase 8) — folders owned by the system user but scoped
+// to a browser localStorage session UUID (anonSessionId). No auth; the
+// anonSessionId IS the only scoping, so every read/write must check it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function anonymousScope(anonSessionId: string) {
+  return { isAnonymous: true, anonSessionId };
+}
+
+export async function createAnonymousFolder(
+  name: string,
+  parentFolderId: string | null,
+  anonSessionId: string,
+): Promise<AnonymousFolderWithStats> {
+  const systemUserId = await getSystemUserId();
+  if (parentFolderId) {
+    const parent = await db.folder.findFirst({
+      where: { id: parentFolderId, ...anonymousScope(anonSessionId) },
+    });
+    if (!parent) throw new Error("Parent folder not found");
+  }
+
+  const folder = await db.folder.create({
+    data: {
+      ownerUserId: systemUserId,
+      parentFolderId,
+      name,
+      isAnonymous: true,
+      anonSessionId,
+      expiresAt: new Date(Date.now() + config.anonymousTTLDays * 86_400_000),
+    },
+  });
+
+  return {
+    id: folder.id,
+    parentFolderId: folder.parentFolderId,
+    name: folder.name,
+    itemCount: 0,
+    totalSizeBytes: "0",
+    createdAt: folder.createdAt,
+    updatedAt: folder.updatedAt,
+    expiresAt: folder.expiresAt,
+  };
+}
+
+export async function renameAnonymousFolder(
+  folderId: string,
+  name: string,
+  anonSessionId: string,
+): Promise<boolean> {
+  const folder = await db.folder.findFirst({
+    where: { id: folderId, ...anonymousScope(anonSessionId) },
+  });
+  if (!folder) throw new Error("Folder not found");
+  await db.folder.update({ where: { id: folderId }, data: { name } });
+  return true;
+}
+
+export async function moveAnonymousFolder(
+  folderId: string,
+  parentFolderId: string | null,
+  anonSessionId: string,
+): Promise<boolean> {
+  const folder = await db.folder.findFirst({
+    where: { id: folderId, ...anonymousScope(anonSessionId) },
+  });
+  if (!folder) throw new Error("Folder not found");
+  if (parentFolderId === folderId) throw new Error("Cannot move folder into itself");
+
+  if (parentFolderId) {
+    const parent = await db.folder.findFirst({
+      where: { id: parentFolderId, ...anonymousScope(anonSessionId) },
+    });
+    if (!parent) throw new Error("Target folder not found");
+
+    let cursor: string | null = parent.parentFolderId;
+    while (cursor) {
+      if (cursor === folderId) throw new Error("Cannot move folder into its own subfolder");
+      const ancestor: { parentFolderId: string | null } | null = await db.folder.findFirst({
+        where: { id: cursor, ...anonymousScope(anonSessionId) },
+        select: { parentFolderId: true },
+      });
+      cursor = ancestor?.parentFolderId ?? null;
+    }
+  }
+
+  await db.folder.update({ where: { id: folderId }, data: { parentFolderId } });
+  return true;
+}
+
+export async function deleteAnonymousFolder(
+  folderId: string,
+  anonSessionId: string,
+): Promise<boolean> {
+  const folder = await db.folder.findFirst({
+    where: { id: folderId, ...anonymousScope(anonSessionId) },
+  });
+  if (!folder) throw new Error("Folder not found");
+
+  const systemUserId = await getSystemUserId();
+  await db.file.updateMany({
+    where: { ownerUserId: systemUserId, anonSessionId, parentFolderId: folderId, deletedAt: null },
+    data: { deletedAt: new Date() },
+  });
+  const children = await db.folder.findMany({
+    where: { ownerUserId: systemUserId, anonSessionId, parentFolderId: folderId },
+  });
+  for (const child of children) await deleteAnonymousFolder(child.id, anonSessionId);
+  await db.folder.delete({ where: { id: folderId } });
+  return true;
+}
+
+export async function getAnonymousFolders(
+  anonSessionId: string,
+  parentFolderId: string | null,
+): Promise<AnonymousFolderWithStats[]> {
+  const systemUserId = await getSystemUserId();
+  const folders = await db.folder.findMany({
+    where: { ownerUserId: systemUserId, ...anonymousScope(anonSessionId), parentFolderId },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const enriched = await enrichFolders(systemUserId, folders);
+  const expiresMap = new Map(folders.map((f) => [f.id, f.expiresAt]));
+  return enriched.map((f) => ({
+    id: f.id,
+    parentFolderId: f.parentFolderId,
+    name: f.name,
+    itemCount: f.itemCount,
+    totalSizeBytes: f.totalSizeBytes,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    expiresAt: expiresMap.get(f.id) ?? null,
+  }));
+}
+
+export async function getAnonymousFolderPath(
+  anonSessionId: string,
+  folderId: string,
+): Promise<AnonymousFolderWithStats[]> {
+  const systemUserId = await getSystemUserId();
+  const path: Awaited<ReturnType<typeof db.folder.findMany>> = [];
+  let current: string | null = folderId;
+  const seen = new Set<string>();
+
+  while (current) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const folder: Awaited<ReturnType<typeof db.folder.findFirst>> = await db.folder.findFirst({
+      where: { id: current, ...anonymousScope(anonSessionId) },
+    });
+    if (!folder) break;
+    path.unshift(folder);
+    current = folder.parentFolderId;
+  }
+
+  const enriched = await enrichFolders(systemUserId, path);
+  const expiresMap = new Map(path.map((f) => [f.id, f.expiresAt]));
+  return enriched.map((f) => ({
+    id: f.id,
+    parentFolderId: f.parentFolderId,
+    name: f.name,
+    itemCount: f.itemCount,
+    totalSizeBytes: f.totalSizeBytes,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    expiresAt: expiresMap.get(f.id) ?? null,
+  }));
 }

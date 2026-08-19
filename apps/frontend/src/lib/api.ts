@@ -116,10 +116,18 @@ export async function fetchBlobDescriptor(blobId: string): Promise<{
   }>;
 }
 
-/** Fetches a blob's already-decrypted plaintext bytes (server decrypts). */
-export async function fetchBlobBody(blobId: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+/** Fetches a blob's already-decrypted plaintext bytes (server decrypts).
+ *  Pass anonSessionId for anonymous-upload blobs (no auth token). */
+export async function fetchBlobBody(
+  blobId: string,
+  signal?: AbortSignal,
+  anonSessionId?: string,
+): Promise<ArrayBuffer> {
+  const headers: Record<string, string> = getAuthHeaders();
+  if (anonSessionId) headers["X-Anon-Session-Id"] = anonSessionId;
+
   const response = await fetch(`${API_BASE}/api/blob/${blobId}`, {
-    headers: getAuthHeaders(),
+    headers,
     signal,
   });
 

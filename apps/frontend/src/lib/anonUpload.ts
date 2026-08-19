@@ -23,8 +23,8 @@ const INIT_ANON_UPLOAD = `
 `;
 
 const COMMIT_ANON_MANIFEST = `
-  mutation CommitAnonymousManifest($fileId: ID!, $manifestBlobId: String!, $totalBytes: String!, $chunkCount: Int!, $blobs: [UploadedBlobTransportInput!]!) {
-    commitAnonymousManifest(fileId: $fileId, manifestBlobId: $manifestBlobId, totalBytes: $totalBytes, chunkCount: $chunkCount, blobs: $blobs) {
+  mutation CommitAnonymousManifest($fileId: ID!, $manifestBlobId: String!, $totalBytes: String!, $chunkCount: Int!, $blobs: [UploadedBlobTransportInput!]!, $parentFolderId: ID) {
+    commitAnonymousManifest(fileId: $fileId, manifestBlobId: $manifestBlobId, totalBytes: $totalBytes, chunkCount: $chunkCount, blobs: $blobs, parentFolderId: $parentFolderId) {
       success
     }
   }
@@ -40,13 +40,14 @@ const CREATE_SHARE_FOR_ANON = `
 
 export interface AnonymousUploadResult {
   fileId: string;
-  shareUrl: string;
+  shareUrl?: string;
 }
 
 export async function uploadAnonymousFile(
   file: File,
   anonSessionId: string,
   onProgress?: (uploadedBytes: number, totalBytes: number) => void,
+  parentFolderId: string | null = null,
 ): Promise<AnonymousUploadResult> {
   const chunkCount = Math.ceil(file.size / LEGACY_UPLOAD_CHUNK_SIZE_BYTES);
 
@@ -58,6 +59,7 @@ export async function uploadAnonymousFile(
       totalBytes: String(file.size),
       chunkCount,
       anonSessionId,
+      parentFolderId,
     },
   );
   const fileId = initAnonymousUpload.fileId;
@@ -129,16 +131,8 @@ export async function uploadAnonymousFile(
     totalBytes: String(file.size),
     chunkCount,
     blobs: orderedBlobs,
+    parentFolderId,
   });
 
-  // Anonymous uploads are only reachable through a share link — there's no
-  // "my files" view without an account — so we mint one immediately.
-  const isPreviewable = /^(image|video|audio)\//.test(file.type);
-  const { createAnonymousShare } = await gqlRequest<{ createAnonymousShare: { shareId: string; token: string } }>(
-    CREATE_SHARE_FOR_ANON,
-    { fileId, allowContent: true, allowPreview: isPreviewable },
-  );
-
-  const shareUrl = `${window.location.origin}/s/${createAnonymousShare.shareId}?t=${createAnonymousShare.token}`;
-  return { fileId, shareUrl };
+  return { fileId };
 }

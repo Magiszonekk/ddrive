@@ -10,13 +10,20 @@ const RENAME_FOLDER = `
   }
 `;
 
+const RENAME_ANON_FOLDER = `
+  mutation RenameAnonFolder($folderId: ID!, $name: String!, $anonSessionId: String!) {
+    renameAnonymousFolder(folderId: $folderId, name: $name, anonSessionId: $anonSessionId)
+  }
+`;
+
 interface Props {
   folder: FolderItem;
   onRenamed: () => void;
   onClose: () => void;
+  anonSessionId?: string;
 }
 
-export function RenameFolderModal({ folder, onRenamed, onClose }: Props) {
+export function RenameFolderModal({ folder, onRenamed, onClose, anonSessionId }: Props) {
   const [name, setName] = useState(folder.name);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -28,7 +35,11 @@ export function RenameFolderModal({ folder, onRenamed, onClose }: Props) {
     setLoading(true);
     setError("");
     try {
-      await gqlRequest(RENAME_FOLDER, { folderId: folder.id, name: trimmed });
+      if (anonSessionId) {
+        await gqlRequest(RENAME_ANON_FOLDER, { folderId: folder.id, name: trimmed, anonSessionId });
+      } else {
+        await gqlRequest(RENAME_FOLDER, { folderId: folder.id, name: trimmed });
+      }
       onRenamed();
       onClose();
     } catch (err) {

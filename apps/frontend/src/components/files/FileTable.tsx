@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Clock,
   Download,
   Eye,
   Folder,
@@ -32,6 +33,7 @@ export interface FileItem {
   thumbnailBlobId?: string | null;
   status: string;
   createdAt: string;
+  expiresAt?: string | null;
 }
 
 export interface FolderItem {
@@ -59,6 +61,7 @@ interface Props {
   onDeleteFolder?: (folder: FolderItem) => void;
   onMoveFile?: (fileId: string, targetFolderId: string) => void;
   onMoveFolder?: (folderId: string, targetFolderId: string) => void;
+  onExtendTtl?: (file: FileItem) => void;
 }
 
 type SortKey = "name" | "size" | "date";
@@ -80,7 +83,7 @@ function loadViewMode(): ViewMode {
 export function FileTable({
   files, folders, onDownload, onPreview, onPlay, onDelete, onShare,
   onDownloadFolder, onRenameFolder, onDeleteFolder,
-  onMoveFile, onMoveFolder,
+  onMoveFile, onMoveFolder, onExtendTtl,
 }: Props) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -347,13 +350,21 @@ export function FileTable({
                 </td>
                 <td className="px-4 py-3 text-ink">{file.name}</td>
                 <td className="px-4 py-3 text-sm text-muted"><span className="font-mono tabular-nums">{formatSize(file.size)}</span></td>
-                <td className="px-4 py-3 text-sm text-muted"><span className="font-mono tabular-nums">{formatDate(file.createdAt)}</span></td>
+                <td className="px-4 py-3 text-sm text-muted">
+                  <span className="font-mono tabular-nums">{formatDate(file.createdAt)}</span>
+                  {file.expiresAt && (
+                    <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-warning">
+                      <Clock size={11} />{ttlLabel(file.expiresAt)}
+                    </div>
+                  )}
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
                     {onPreview && file.mimeType.startsWith("image/") && <IconButton onClick={() => onPreview(file)} title="Preview" className="text-muted hover:bg-paper-2 hover:text-ink"><Eye size={15} /></IconButton>}
                     {onPlay && file.status === "READY" && file.mimeType.startsWith("video/") && <IconButton onClick={() => onPlay(file)} title="Play" className="text-muted hover:bg-paper-2 hover:text-ink"><Play size={15} /></IconButton>}
                     <IconButton onClick={() => onDownload(file)} title="Download" className="text-accent hover:bg-accent/10"><Download size={15} /></IconButton>
                     {onShare && file.status === "READY" && <IconButton onClick={() => onShare(file)} title="Share" className="text-muted hover:bg-paper-2 hover:text-ink"><Share2 size={15} /></IconButton>}
+                    {onExtendTtl && file.expiresAt && <IconButton onClick={() => onExtendTtl(file)} title="Extend TTL" className="text-muted hover:bg-paper-2 hover:text-ink"><Clock size={15} /></IconButton>}
                     {onDelete && <IconButton onClick={() => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); }} title="Delete" className="text-error hover:bg-error/10 hover:text-error"><Trash2 size={15} /></IconButton>}
                   </div>
                 </td>
@@ -460,9 +471,19 @@ function FolderActionMenu({ folderName, onOpen, onDownload, onRename, onDelete }
   );
 }
 
-function FileCard({ file, onDownload, onPlay, onShare, onDelete }: { file: FileItem; onDownload: () => void; onPlay?: () => void; onShare?: () => void; onDelete?: () => void }) {
+function ttlLabel(expiresAt?: string | null): string | null {
+  if (!expiresAt) return null;
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return "expired";
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+  return days > 0 ? `${days}d ${hours}h left` : `${hours}h left`;
+}
+
+function FileCard({ file, onDownload, onPlay, onShare, onDelete, onExtendTtl }: { file: FileItem; onDownload: () => void; onPlay?: () => void; onShare?: () => void; onDelete?: () => void; onExtendTtl?: (file: FileItem) => void }) {
   const statusChipClass =
     file.status === "READY" ? "chip chip--success" : file.status === "FAILED" ? "chip chip--error" : "chip chip--warning";
+  const ttl = ttlLabel(file.expiresAt);
   return (
     <div className="rounded-card border border-rule bg-paper p-4">
       <div className="flex items-start gap-3">
@@ -473,9 +494,10 @@ function FileCard({ file, onDownload, onPlay, onShare, onDelete }: { file: FileI
               <p className="truncate text-sm font-medium text-ink">{file.name}</p>
               <p className="mt-1 text-xs text-muted">
                 <span className="font-mono tabular-nums">{formatSize(file.size)} · {formatDate(file.createdAt)}</span>
+                {ttl && <span className="ml-2 inline-flex items-center gap-1 text-warning"><Clock size={11} />{ttl}</span>}
               </p>
             </div>
-            <FileActionMenu fileName={file.name} onDownload={onDownload} onPlay={onPlay} onShare={onShare} onDelete={onDelete} />
+            <FileActionMenu fileName={file.name} onDownload={onDownload} onPlay={onPlay} onShare={onShare} onDelete={onDelete} onExtendTtl={onExtendTtl ? () => onExtendTtl(file) : undefined} />
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <span className={statusChipClass}>{file.status}</span>
@@ -487,7 +509,7 @@ function FileCard({ file, onDownload, onPlay, onShare, onDelete }: { file: FileI
   );
 }
 
-function FileActionMenu({ fileName, onDownload, onPlay, onShare, onDelete }: { fileName: string; onDownload: () => void; onPlay?: () => void; onShare?: () => void; onDelete?: () => void }) {
+function FileActionMenu({ fileName, onDownload, onPlay, onShare, onDelete, onExtendTtl }: { fileName: string; onDownload: () => void; onPlay?: () => void; onShare?: () => void; onDelete?: () => void; onExtendTtl?: () => void }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -500,6 +522,7 @@ function FileActionMenu({ fileName, onDownload, onPlay, onShare, onDelete }: { f
     onPlay ? { label: "Play", icon: Play, onClick: onPlay, danger: false } : null,
     { label: "Download", icon: Download, onClick: onDownload, danger: false },
     onShare ? { label: "Share", icon: Share2, onClick: onShare, danger: false } : null,
+    onExtendTtl ? { label: "Extend TTL", icon: Clock, onClick: onExtendTtl, danger: false } : null,
     onDelete ? { label: "Delete", icon: Trash2, onClick: onDelete, danger: true } : null,
   ].filter(Boolean) as Array<{ label: string; icon: typeof Play; onClick: () => void; danger: boolean }>;
   return (

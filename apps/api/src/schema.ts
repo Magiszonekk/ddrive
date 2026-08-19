@@ -118,10 +118,14 @@ export function buildSchema() {
 
       type AnonymousFile {
         id: ID!
+        kind: String! # "FILE" | "FOLDER"
         name: String
         mimeType: String
+        thumbnailBlobId: String
         totalBytes: String!
+        itemCount: Int
         status: String!
+        parentFolderId: ID
         expiresAt: DateTime
         createdAt: DateTime!
       }
@@ -253,6 +257,8 @@ export function buildSchema() {
         storageUsage: StorageUsage!
         accessShare(shareId: ID!, token: String!): ShareAccess
         myAnonymousUploads(anonSessionId: String!): [AnonymousFile!]!
+        anonymousFiles(anonSessionId: String!, parentFolderId: ID): [AnonymousFile!]!
+        anonymousFolderPath(anonSessionId: String!, folderId: ID!): [AnonymousFile!]!
         filesForHealthCheck(samplePercent: Float, fileId: ID): [HealthCheckFile!]!
         replicationStatus: ReplicationStatus!
       }
@@ -295,6 +301,7 @@ export function buildSchema() {
           totalBytes: String!
           chunkCount: Int!
           anonSessionId: String
+          parentFolderId: ID
         ): InitUploadResult!
 
         commitAnonymousManifest(
@@ -303,6 +310,7 @@ export function buildSchema() {
           totalBytes: String!
           chunkCount: Int!
           blobs: [UploadedBlobTransportInput!]!
+          parentFolderId: ID
         ): CommitManifestResult!
 
         setFilePreview(fileId: ID!, previewBlobId: String!): Boolean!
@@ -338,6 +346,14 @@ export function buildSchema() {
         createAnonymousShare(fileId: ID!, allowContent: Boolean!, allowPreview: Boolean): ShareCreateResult!
         reportShare(shareId: ID!, reason: String!, note: String): Boolean!
         claimShare(shareId: ID!, token: String!): Boolean!
+        # Anonymous workspace (Phase 8) — no auth; scoped by anonSessionId.
+        createAnonymousFolder(name: String!, parentFolderId: ID, anonSessionId: String!): AnonymousFile!
+        renameAnonymousFolder(folderId: ID!, name: String!, anonSessionId: String!): Boolean!
+        deleteAnonymousFolder(folderId: ID!, anonSessionId: String!): Boolean!
+        moveAnonymousFolder(folderId: ID!, parentFolderId: ID, anonSessionId: String!): Boolean!
+        moveAnonymousFile(fileId: ID!, parentFolderId: ID, anonSessionId: String!): Boolean!
+        extendAnonymousTTL(fileId: ID!, anonSessionId: String!): Boolean!
+        deleteAnonymousFile(fileId: ID!, anonSessionId: String!): Boolean!
         updateChunkHealthBatch(updates: [ChunkHealthUpdateInput!]!): Boolean!
         runHealthCheck(mode: String!, samplePercent: Float, fileId: ID): HealthCheckSummary!
       }
@@ -424,6 +440,58 @@ export function buildSchema() {
           enforceRateLimit(ctx.ip, "auth");
           return fileResolvers.getAnonymousUploadsBySession(args.anonSessionId);
         },
+        anonymousFiles: async (_parent: unknown, args: { anonSessionId: string; parentFolderId?: string | null }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          const [files, folders] = await Promise.all([
+            fileResolvers.getAnonymousFiles(args.anonSessionId, args.parentFolderId ?? null),
+            folderResolvers.getAnonymousFolders(args.anonSessionId, args.parentFolderId ?? null),
+          ]);
+          const fileItems = files.map((f) => ({
+            id: f.id,
+            kind: "FILE",
+            name: f.name,
+            mimeType: f.mimeType,
+            thumbnailBlobId: f.thumbnailBlobId,
+            totalBytes: f.totalBytes.toString(),
+            itemCount: null,
+            status: f.status,
+            parentFolderId: f.parentFolderId,
+            expiresAt: f.expiresAt,
+            createdAt: f.createdAt,
+          }));
+          const folderItems = folders.map((f) => ({
+            id: f.id,
+            kind: "FOLDER",
+            name: f.name,
+            mimeType: null,
+            thumbnailBlobId: null,
+            totalBytes: f.totalSizeBytes,
+            itemCount: f.itemCount,
+            status: "READY",
+            parentFolderId: f.parentFolderId,
+            expiresAt: f.expiresAt,
+            createdAt: f.createdAt,
+          }));
+          // Folders first, then files (both newest-first already from resolvers).
+          return [...folderItems, ...fileItems];
+        },
+        anonymousFolderPath: async (_parent: unknown, args: { anonSessionId: string; folderId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          const folders = await folderResolvers.getAnonymousFolderPath(args.anonSessionId, args.folderId);
+          return folders.map((f) => ({
+            id: f.id,
+            kind: "FOLDER",
+            name: f.name,
+            mimeType: null,
+            thumbnailBlobId: null,
+            totalBytes: f.totalSizeBytes,
+            itemCount: f.itemCount,
+            status: "READY",
+            parentFolderId: f.parentFolderId,
+            expiresAt: f.expiresAt,
+            createdAt: f.createdAt,
+          }));
+        },
       },
       Mutation: {
         register: async (_parent: unknown, args: {
@@ -489,9 +557,14 @@ export function buildSchema() {
           totalBytes: string;
           chunkCount: number;
           anonSessionId?: string;
+          parentFolderId?: string | null;
         }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
-          return fileResolvers.initAnonymousUpload(args, args.anonSessionId ?? null);
+          return fileResolvers.initAnonymousUpload(
+            { name: args.name, mimeType: args.mimeType, totalBytes: args.totalBytes, chunkCount: args.chunkCount },
+            args.anonSessionId ?? null,
+            args.parentFolderId ?? null,
+          );
         },
         commitAnonymousManifest: async (_parent: unknown, args: {
           fileId: string;
@@ -508,9 +581,10 @@ export function buildSchema() {
             discordChannelId?: string;
             webhookId?: string;
           }>;
+          parentFolderId?: string | null;
         }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
-          return fileResolvers.commitAnonymousManifest(args.fileId, args.manifestBlobId, args.totalBytes, args.chunkCount, args.blobs);
+          return fileResolvers.commitAnonymousManifest(args.fileId, args.manifestBlobId, args.totalBytes, args.chunkCount, args.blobs, args.parentFolderId ?? null);
         },
         commitManifest: async (_parent: unknown, args: {
           fileId: string;
@@ -607,6 +681,47 @@ export function buildSchema() {
         claimShare: async (_parent: unknown, args: { shareId: string; token: string }, ctx: Context) => {
           const auth = requireAuth(ctx);
           return sharingResolvers.claimShare(auth.userId, args.shareId, args.token);
+        },
+        createAnonymousFolder: async (_parent: unknown, args: { name: string; parentFolderId?: string | null; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          const folder = await folderResolvers.createAnonymousFolder(args.name, args.parentFolderId ?? null, args.anonSessionId);
+          return {
+            id: folder.id,
+            kind: "FOLDER",
+            name: folder.name,
+            mimeType: null,
+            thumbnailBlobId: null,
+            totalBytes: folder.totalSizeBytes,
+            itemCount: folder.itemCount,
+            status: "READY",
+            parentFolderId: folder.parentFolderId,
+            expiresAt: folder.expiresAt,
+            createdAt: folder.createdAt,
+          };
+        },
+        renameAnonymousFolder: async (_parent: unknown, args: { folderId: string; name: string; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return folderResolvers.renameAnonymousFolder(args.folderId, args.name, args.anonSessionId);
+        },
+        deleteAnonymousFolder: async (_parent: unknown, args: { folderId: string; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return folderResolvers.deleteAnonymousFolder(args.folderId, args.anonSessionId);
+        },
+        moveAnonymousFolder: async (_parent: unknown, args: { folderId: string; parentFolderId?: string | null; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return folderResolvers.moveAnonymousFolder(args.folderId, args.parentFolderId ?? null, args.anonSessionId);
+        },
+        moveAnonymousFile: async (_parent: unknown, args: { fileId: string; parentFolderId?: string | null; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return fileResolvers.moveAnonymousFile(args.fileId, args.parentFolderId ?? null, args.anonSessionId);
+        },
+        extendAnonymousTTL: async (_parent: unknown, args: { fileId: string; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return fileResolvers.extendAnonymousTTL(args.fileId, args.anonSessionId);
+        },
+        deleteAnonymousFile: async (_parent: unknown, args: { fileId: string; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return fileResolvers.deleteAnonymousFile(args.fileId, args.anonSessionId);
         },
       },
     }, ...pluginResolvers),

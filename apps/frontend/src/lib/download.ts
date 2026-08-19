@@ -16,6 +16,7 @@ interface DownloadOptions {
   fileName: string;
   mimeType: string;
   manifestBlobId: string;
+  anonSessionId?: string;
 }
 
 interface SharedDownloadOptions {
@@ -56,7 +57,7 @@ export async function downloadFile(options: DownloadOptions): Promise<DownloadRe
 
     const chunks = await downloadChunksConcurrently(
       chunkBlobIds,
-      (blobId, signal) => fetchBlobBody(blobId, signal),
+      (blobId, signal) => fetchBlobBody(blobId, signal, options.anonSessionId),
       controller.signal,
       (downloadedChunks, bytesDownloaded) =>
         downloadStore.updateDownload(options.fileId, { downloadedChunks, bytesDownloaded }),

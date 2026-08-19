@@ -8,7 +8,8 @@ import { ColorModeToggle } from "../components/layout/ColorModeToggle.js";
 
 interface UploadedItem {
   fileName: string;
-  shareUrl: string;
+  fileId: string;
+  shareUrl?: string;
 }
 
 /**
@@ -34,10 +35,10 @@ export function AnonymousUpload() {
     for (const file of Array.from(files)) {
       try {
         setProgress(0);
-        const { shareUrl } = await uploadAnonymousFile(file, anonSessionId, (uploaded, total) => {
+        const { fileId, shareUrl } = await uploadAnonymousFile(file, anonSessionId, (uploaded, total) => {
           setProgress(total > 0 ? Math.round((uploaded / total) * 100) : 0);
         });
-        setResults((prev) => [{ fileName: file.name, shareUrl }, ...prev]);
+        setResults((prev) => [{ fileName: file.name, fileId, shareUrl }, ...prev]);
       } catch (err) {
         setError(err instanceof Error ? err.message : `Failed to upload ${file.name}`);
       }
@@ -101,21 +102,24 @@ export function AnonymousUpload() {
         {results.length > 0 && (
           <div className="mt-6 space-y-3">
             {results.map((r) => (
-              <div key={r.shareUrl} className="rounded-card border border-rule bg-paper-2 p-4">
+              <div key={r.fileId} className="rounded-card border border-rule bg-paper-2 p-4">
                 <p className="mb-2 truncate text-sm font-medium text-ink">{r.fileName}</p>
                 <div className="flex gap-2">
-                  <input
-                    readOnly
-                    value={r.shareUrl}
-                    className="flex-1 rounded-md border border-rule-2 bg-paper px-3 py-2 font-mono text-xs text-ink-2 focus:outline-none"
-                  />
-                  <button
-                    onClick={() => handleCopy(r.shareUrl)}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-rule-2 bg-paper px-3 py-2 text-xs font-medium text-ink-2 transition-colors duration-micro ease-out hover:bg-paper-2 hover:text-ink"
+                  <Link
+                    to="/drive"
+                    className="inline-flex items-center justify-center rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-ink transition-colors duration-micro ease-out hover:bg-accent-2"
                   >
-                    {copiedUrl === r.shareUrl ? <Check size={14} className="text-success" /> : <Copy size={14} />}
-                    {copiedUrl === r.shareUrl ? "Copied" : "Copy"}
-                  </button>
+                    Open in my files
+                  </Link>
+                  {r.shareUrl && (
+                    <button
+                      onClick={() => handleCopy(r.shareUrl!)}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-rule-2 bg-paper px-3 py-2 text-xs font-medium text-ink-2 transition-colors duration-micro ease-out hover:bg-paper-2 hover:text-ink"
+                    >
+                      {copiedUrl === r.shareUrl ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+                      {copiedUrl === r.shareUrl ? "Copied" : "Copy link"}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

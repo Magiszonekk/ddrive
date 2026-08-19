@@ -274,8 +274,136 @@ after the TTL; a logged-in user can claim it before that happens.
   `createAnonymousShare`) -> claim to account -> file confirmed in the
   claiming account's file list.
 
-Exit criteria: MET.
+## Phase 8 — Anonymous "private drive" (logged-out workspace)
 
+**Goal:** turn the current "drop a file, get a link" anon flow into a real
+logged-out workspace — a table/grid of the browser's uploaded files +
+folders, with thumbnails, created date, file size, TTL remaining, folder
+creation, nesting, sharing, and list/grid view toggle. The session UUID in
+localStorage (`getOrCreateAnonSessionId()`) becomes the persistent identity
+that scopes "my files" for that browser.
+
+Current state (verified 2026-08-18):
+- `File` already has `anonSessionId`, `isAnonymous`, `expiresAt`,
+  `parentFolderId` — so files CAN be scoped and nested already.
+- `Folder` has `expiresAt` but NO `anonSessionId`/`isAnonymous` — needs both.
+- `initAnonymousUpload` HARDCODES `parentFolderId: null` — must accept it.
+- `getFolders`/`getFiles` (authenticated) filter by `ownerUserId` only — an
+  anon path (by `anonSessionId`) is missing entirely.
+- `myAnonymousUploads` already exists but returns a flat `[AnonymousFile]`
+  (no folder, no size/thumbnail/ttl fields beyond id/name) — too thin.
+- Frontend `Dashboard.tsx` is the ready-made UI; the anon workspace should
+  reuse `FileTable`, `FolderBreadcrumb`, `Thumbnail`, `ShareModal`,
+  `NewFolderModal`, `RenameFolderModal` against anon-scoped queries instead
+  of the JWT-authed ones.
+
+### 8.1 Backend — schema/prisma
+
+1. `Folder` model: add `isAnonymous Boolean @default(false)`,
+   `anonSessionId String?`, and `@@index([anonSessionId])` (mirror `File`).
+   `npx prisma db push` (already using db push, no migration history).
+2. GraphQL:
+   - New `Query.anonymousFiles(anonSessionId: String!, parentFolderId: ID):
+     [AnonymousFile!]!` — folders + files in one call, scoped by
+     `anonSessionId` AND `isAnonymous: true`. Returns name, mimeType,
+     thumbnailBlobId, totalBytes, status, createdAt, expiresAt,
+     parentFolderId, itemCount (folders), isFolder flag (or two fields
+     `files`/`folders`). Keep it simple: return `AnonymousFile` with
+     `kind: "FILE" | "FOLDER"` discriminator + folder-only `itemCount`.
+   - New `Query.anonymousFolderPath(anonSessionId: String!, folderId: ID!):
+     [AnonymousFile!]!` — breadcrumb path, same scoping.
+   - `initAnonymousUpload` gains `parentFolderId: ID` argument (nullable).
+   - `commitAnonymousManifest` sets `parentFolderId` on the file (currently
+     it calls `commitManifest(systemUserId, ...)` which ignores folder — add
+     a `parentFolderId` pass-through so the committed file lands in the
+     chosen anon folder).
+   - New `Mutation.createAnonymousFolder(name: String!, parentFolderId: ID,
+     anonSessionId: String!): AnonymousFolder!` — creates under
+     `getSystemUserId()`, with `isAnonymous: true`, `anonSessionId`,
+     `expiresAt` = now + TTL (folders TTL like files).
+   - New `Mutation.renameAnonymousFolder(folderId: ID!, name: String!,
+     anonSessionId: String!)` — verify `anonSessionId` matches before rename.
+   - New `Mutation.deleteAnonymousFolder(folderId: ID!, anonSessionId:
+     String!)` — soft-delete tree (reuse soft-delete pattern), scoped.
+   - New `Mutation.moveAnonymousFile(fileId: ID!, parentFolderId: ID,
+     anonSessionId: String!)` / `moveAnonymousFolder(...)` — scoped moves.
+   - New `Mutation.extendAnonymousTTL(fileId: ID!, anonSessionId: String!)`
+     — resets `expiresAt` to now + TTL (lets a user push the deadline back;
+     not infinite, just one more cycle — keeps TTL meaningful).
+   - `AnonymousFile` type: add `kind`, `itemCount`, `expiresAt`,
+     `thumbnailBlobId`, `totalBytes`, `parentFolderId`, `createdAt`.
+   - All anon mutations verify `anonSessionId` against the row's stored
+     value (defense: a browser can't touch another session's files even
+     without auth). Rate-limit per IP like `createAnonymousShare`.
+3. TTL sweep (`purgeExpiredAnonymousFiles` in files.ts + index.ts timer)
+   already purges expired FILES — extend to also purge expired anonymous
+   FOLDERS (and their trees) the same way.
+
+### 8.2 Backend — resolvers
+
+- `folders.ts`: add `createAnonymousFolder`, `renameAnonymousFolder`,
+  `deleteAnonymousFolder`, `moveAnonymousFolder`, `getAnonymousFolders`,
+  `getAnonymousFolderPath` — mirror the authed versions but scoped by
+  `anonSessionId` + `isAnonymous`, owner = system user.
+- `files.ts`: `initAnonymousUpload(parentFolderId)`, `commitAnonymousManifest`
+  writes `parentFolderId`, `getAnonymousFiles(anonSessionId, parentFolderId)`
+  returns FolderWithStats-shaped rows for both files and folders,
+  `moveAnonymousFile`. Reuse `enrichFolders` logic for folder itemCount/size.
+
+### 8.3 Frontend
+
+1. `apps/frontend/src/lib/anonApi.ts` (new) — thin GraphQL wrappers for the
+   anon queries/mutations above, all taking `anonSessionId` from
+   `getOrCreateAnonSessionId()`. Reuse the existing `gqlRequest`.
+2. `anonUpload.ts`: pass `parentFolderId` (current folder) into
+   `initAnonymousUpload`; on commit pass it too so the file lands in the
+   open folder.
+3. New page `apps/frontend/src/pages/AnonymousDrive.tsx` — a near-clone of
+   `Dashboard.tsx` but:
+   - no JWT; reads `anonSessionId` from localStorage.
+   - uses `anonymousFiles` / `anonymousFolderPath` queries.
+   - uses anon-folder mutations + `uploadAnonymousFile(file, anonSessionId,
+     parentFolderId)`.
+   - FileTable gets `thumbnailBlobId` rendered (already supported) +
+     columns: name, size, created, TTL remaining, actions (download, share,
+     delete, move-to-folder).
+   - Reuses `FileTable` ViewMode list/grid toggle (already built for the
+     authed dashboard) — so the grid/list switch comes for free.
+   - `ShareModal` already works on a fileId; reuse it (anon files can be
+     shared via `createAnonymousShare`, already wired).
+4. Route: `App.tsx` — point `/upload` at `AnonymousDrive` instead of the
+   minimal `AnonymousUpload` (keep the drag-drop + "get a link" feel but
+   inside the full table view), OR keep `/upload` as a landing that
+   redirects into `/drive` (anon). Simpler: rename the anon workspace route
+   to `/drive` and make `/upload` redirect there. Decide during impl; the
+   Login "Continue without an account" button should go to the workspace.
+5. The authed `Dashboard` FileTable already supports grid/list + thumbnails;
+   confirm `AnonymousDrive` passes `thumbnailBlobId` through so images/video
+   show thumbnails in both views (this satisfies "zdjęcie i wideo mają
+   miniaturkę").
+
+### 8.4 Verification (live, like Phase 7)
+
+On https://ddrive.cikowice.pl via real API calls (and the browser if it
+comes up):
+- Create anon folder A, subfolder B inside A, upload file into B via the
+  UI/API → file appears in B with correct `parentFolderId`, thumbnail
+  generated for an image.
+- `anonymousFiles(anonSessionId, parentFolderId: B)` returns the file;
+  `anonymousFolderPath` returns [A, B].
+- Table shows: thumbnail (img/video), name, size, created date, TTL days
+  remaining. Grid view shows thumbnails as tiles. Toggle switches views and
+  persists (localStorage like authed).
+- Share an anon file → link works (already proven); report/claim still work.
+- Let a DIFFERENT anonSessionId hit the same queries → sees nothing (scoping
+  holds).
+- `extendAnonymousTTL` pushes `expiresAt` forward; expired folder + its
+  files get purged by the sweep after their TTL (spot-check via a short
+  TTL test or by trusting the existing file sweep + mirror for folders).
+
+Exit criteria: a logged-out user gets a persistent, folder-organized file
+table/grid with thumbnails, metadata (size/created/TTL), sharing, and
+list/grid toggle — scoped to their browser session, no account required.
 
 ---
 

@@ -5,6 +5,7 @@ import { Register } from "./pages/Register.js";
 import { Dashboard } from "./pages/Dashboard.js";
 import { SharedFile } from "./pages/SharedFile.js";
 import { AnonymousUpload } from "./pages/AnonymousUpload.js";
+import { AnonymousDrive } from "./pages/AnonymousDrive.js";
 import { Settings } from "./pages/Settings.js";
 import { HealthCheck } from "./pages/HealthCheck.js";
 import { MainLayout } from "./components/layout/MainLayout.js";
@@ -40,6 +41,7 @@ export function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/share/:shareId" element={<SharedFile />} />
       <Route path="/upload" element={<AnonymousUpload />} />
+      <Route path="/drive" element={<AnonymousDrive />} />
       <Route
         path="/*"
         element={
