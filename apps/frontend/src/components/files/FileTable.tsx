@@ -63,6 +63,8 @@ interface Props {
   onMoveFolder?: (folderId: string, targetFolderId: string) => void;
   onExtendTtl?: (file: FileItem) => void;
   anonSessionId?: string;
+  /** Folder open handler. Defaults to authed /folder/:id route; anon passes a /drive?folder= handler. */
+  onOpenFolder?: (folderId: string) => void;
 }
 
 type SortKey = "name" | "size" | "date";
@@ -84,9 +86,10 @@ function loadViewMode(): ViewMode {
 export function FileTable({
   files, folders, onDownload, onPreview, onPlay, onDelete, onShare,
   onDownloadFolder, onRenameFolder, onDeleteFolder,
-  onMoveFile, onMoveFolder, onExtendTtl, anonSessionId,
+  onMoveFile, onMoveFolder, onExtendTtl, anonSessionId, onOpenFolder,
 }: Props) {
   const navigate = useNavigate();
+  const openFolder = onOpenFolder ?? ((id: string) => navigate(`/folder/${id}`));
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: "date", dir: "desc" });
   const [page, setPage] = useState(1);
@@ -206,7 +209,7 @@ export function FileTable({
             folder={folder}
             isOver={isOver(folder.id)}
             dragHandlers={folderDragHandlers(folder.id)}
-            onOpen={() => navigate(`/folder/${folder.id}`)}
+            onOpen={() => openFolder(folder.id)}
             onDownload={onDownloadFolder ? () => onDownloadFolder(folder) : undefined}
             onRename={onRenameFolder ? () => onRenameFolder(folder) : undefined}
             onDelete={onDeleteFolder ? () => onDeleteFolder(folder) : undefined}
@@ -234,7 +237,7 @@ export function FileTable({
               {folders.map((folder) => (
                 <button
                   key={`folder-grid-${folder.id}`}
-                  onClick={() => navigate(`/folder/${folder.id}`)}
+                  onClick={() => openFolder(folder.id)}
                   {...folderDragHandlers(folder.id)}
                   className={`group flex flex-col items-center gap-2 rounded-card border p-4 text-center transition-colors duration-short ease-out ${isOver(folder.id) ? "border-accent/60 bg-accent/10" : "border-rule bg-paper hover:border-rule-2 hover:bg-paper-2"}`}
                 >
@@ -305,7 +308,7 @@ export function FileTable({
                 <td className="px-2 py-3">
                   <Folder size={18} className={isOver(folder.id) ? "text-accent" : "text-muted"} />
                 </td>
-                <td className="cursor-pointer px-4 py-3 text-ink" onClick={() => navigate(`/folder/${folder.id}`)}>
+                <td className="cursor-pointer px-4 py-3 text-ink" onClick={() => openFolder(folder.id)}>
                   <span className="inline-flex items-center gap-2">
                     {folder.name}
                     {isOver(folder.id) && <span className="ml-1 text-xs text-accent">Drop here</span>}
