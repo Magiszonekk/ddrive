@@ -145,6 +145,7 @@ export function AnonymousDrive() {
         mimeType: file.mimeType,
         manifestBlobId: `${file.id}:chunk:${Math.max(0, Math.ceil(Number(file.size) / (8 * 1024 * 1024)) - 1)}`,
         anonSessionId,
+        chunkCount: file.chunkCount,
       });
     } catch (err) {
       alert(err instanceof Error ? err.message : "Download failed");
