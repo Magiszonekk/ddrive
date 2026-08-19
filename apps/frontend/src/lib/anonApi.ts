@@ -18,12 +18,13 @@ export interface AnonymousItem {
   parentFolderId: string | null;
   expiresAt: string | null;
   createdAt: string;
+  chunkCount: number;
 }
 
 const ANON_FILES_QUERY = `
   query AnonFiles($anonSessionId: String!, $parentFolderId: ID) {
     anonymousFiles(anonSessionId: $anonSessionId, parentFolderId: $parentFolderId) {
-      id kind name mimeType thumbnailBlobId totalBytes itemCount status parentFolderId expiresAt createdAt
+      id kind name mimeType thumbnailBlobId totalBytes itemCount status parentFolderId expiresAt createdAt chunkCount
     }
   }
 `;
@@ -31,7 +32,7 @@ const ANON_FILES_QUERY = `
 const ANON_FOLDER_PATH_QUERY = `
   query AnonFolderPath($anonSessionId: String!, $folderId: ID!) {
     anonymousFolderPath(anonSessionId: $anonSessionId, folderId: $folderId) {
-      id kind name mimeType thumbnailBlobId totalBytes itemCount status parentFolderId expiresAt createdAt
+      id kind name mimeType thumbnailBlobId totalBytes itemCount status parentFolderId expiresAt createdAt chunkCount
     }
   }
 `;
