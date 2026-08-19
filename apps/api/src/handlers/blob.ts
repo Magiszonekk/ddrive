@@ -242,7 +242,19 @@ export async function handleBlobContentForShare(req: Request, params: { blobId: 
     return Response.json({ error: "Blob not found" }, { status: 404 });
   }
 
-  if (blob.ownerUserId !== share.ownerUserId) {
+  // Folder shares: the requested blob must belong to a file inside the
+  // shared folder (same system owner, but scoping by folder prevents a
+  // folder share from unlocking another anonymous session's files — all
+  // anon files share one ownerUserId).
+  if (share.shareType === "FOLDER") {
+    const fileId = params.blobId.split(":")[0];
+    const file = await db.file.findFirst({
+      where: { id: fileId, parentFolderId: share.folderId, deletedAt: null },
+    });
+    if (!file) {
+      return Response.json({ error: "Blob not accessible via this share" }, { status: 403 });
+    }
+  } else if (blob.ownerUserId !== share.ownerUserId) {
     return Response.json({ error: "Blob not accessible via this share" }, { status: 403 });
   }
 

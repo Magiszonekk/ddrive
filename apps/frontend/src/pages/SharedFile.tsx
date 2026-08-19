@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import { fetchBlobBodyShared } from "../lib/api.js";
 import { gqlRequest } from "../lib/graphql.js";
-import { DOWNLOAD_SUCCESS_EVENT } from "../lib/download.js";
+import { DOWNLOAD_SUCCESS_EVENT, downloadSharedFolderAsZip } from "../lib/download.js";
 import type { ShareAccessResponse } from "@ddv4/types/api";
 import { useNotificationStore } from "../stores/notifications.js";
 import { AuthCard, authPrimaryButtonClass } from "../components/layout/AuthCard.js";
@@ -11,25 +11,39 @@ const ACCESS_SHARE = `
   query AccessShare($shareId: ID!, $token: String!) {
     accessShare(shareId: $shareId, token: $token) {
       shareId
+      shareType
       fileId
+      folderId
       name
       mimeType
       chunkCount
       allowContent
       allowPreview
+      folderContents {
+        id
+        name
+        mimeType
+        size
+        thumbnailBlobId
+        chunkCount
+        kind
+      }
     }
   }
 `;
 
 interface ResolvedShareInfo {
   shareId: string;
+  shareType: "FILE" | "FOLDER";
   fileId: string;
+  folderId: string | null;
   fileName: string;
   mimeType: string;
   chunkCount: number;
   allowContent: boolean;
   allowPreview: boolean;
   token: string;
+  folderContents?: ShareAccessResponse["folderContents"];
 }
 
 function isImage(mimeType: string) { return mimeType.startsWith("image/"); }
@@ -77,13 +91,16 @@ export function SharedFile() {
 
         setInfo({
           shareId: accessShare.shareId,
+          shareType: accessShare.shareType,
           fileId: accessShare.fileId,
+          folderId: accessShare.folderId,
           fileName: accessShare.name ?? "shared-file",
           mimeType: accessShare.mimeType ?? "application/octet-stream",
           chunkCount: accessShare.chunkCount,
           allowContent: accessShare.allowContent,
           allowPreview: accessShare.allowPreview,
           token,
+          folderContents: accessShare.folderContents,
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load share");
@@ -150,6 +167,27 @@ export function SharedFile() {
     }
   };
 
+  const handleDownloadFolder = async () => {
+    if (!shareId || !info || !info.folderContents) return;
+    setDownloading(true);
+    setError("");
+    try {
+      await downloadSharedFolderAsZip(
+        shareId,
+        info.token,
+        info.fileName,
+        info.folderContents,
+      );
+      window.dispatchEvent(new CustomEvent(DOWNLOAD_SUCCESS_EVENT, { detail: { fileName: `${info.fileName}.zip`, bytes: 0 } }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Download failed";
+      setError(message);
+      pushNotification("error", message);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   if (error && !info) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-paper px-4">
@@ -167,29 +205,61 @@ export function SharedFile() {
   }
 
   return (
-    <AuthCard title="Shared file">
+    <AuthCard title={info.shareType === "FOLDER" ? "Shared folder" : "Shared file"}>
       <div className="mb-6 space-y-1 text-sm text-ink-2">
         <p className="truncate font-medium text-ink">{info.fileName}</p>
-        <p className="font-mono text-xs text-muted">{info.mimeType}</p>
+        {info.shareType === "FILE" && (
+          <p className="font-mono text-xs text-muted">{info.mimeType}</p>
+        )}
       </div>
 
-      {previewUrl && isImage(info.mimeType) && (
+      {info.shareType === "FOLDER" && info.folderContents && (
+        <ul className="mb-6 max-h-[50vh] space-y-1 overflow-y-auto rounded-card border border-rule bg-paper-2 p-2">
+          {info.folderContents.length === 0 && (
+            <li className="px-2 py-3 text-sm text-muted">This folder is empty.</li>
+          )}
+          {info.folderContents.map((item) => (
+            <li
+              key={item.id}
+              className="flex items-center gap-2 truncate rounded-md px-2 py-2 text-sm text-ink"
+            >
+              <span className="text-muted">{item.kind === "FOLDER" ? "📁" : "📄"}</span>
+              <span className="min-w-0 flex-1 truncate">{item.name ?? item.id}</span>
+              {item.kind === "FILE" && (
+                <span className="font-mono text-xs text-muted">{item.size} B</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {info.shareType === "FILE" && previewUrl && isImage(info.mimeType) && (
         <img src={previewUrl} alt={info.fileName} className="mb-6 max-h-[60vh] w-full rounded-card border border-rule bg-paper-2 object-contain" />
       )}
-      {previewUrl && isVideo(info.mimeType) && (
+      {info.shareType === "FILE" && previewUrl && isVideo(info.mimeType) && (
         <video src={previewUrl} controls autoPlay className="mb-6 max-h-[60vh] w-full rounded-card border border-rule bg-paper-2" />
       )}
-      {previewUrl && isAudio(info.mimeType) && (
+      {info.shareType === "FILE" && previewUrl && isAudio(info.mimeType) && (
         <audio src={previewUrl} controls className="mb-6 w-full" />
       )}
 
-      <button
-        onClick={handleDownload}
-        disabled={downloading || !info.allowContent}
-        className={authPrimaryButtonClass}
-      >
-        {downloading ? "Downloading…" : "Download"}
-      </button>
+      {info.shareType === "FOLDER" ? (
+        <button
+          onClick={handleDownloadFolder}
+          disabled={downloading || !info.allowContent}
+          className={authPrimaryButtonClass}
+        >
+          {downloading ? "Preparing ZIP…" : "Download all (ZIP)"}
+        </button>
+      ) : (
+        <button
+          onClick={handleDownload}
+          disabled={downloading || !info.allowContent}
+          className={authPrimaryButtonClass}
+        >
+          {downloading ? "Downloading…" : "Download"}
+        </button>
+      )}
       {error && <p className="mt-3 text-sm text-error">{error}</p>}
     </AuthCard>
   );

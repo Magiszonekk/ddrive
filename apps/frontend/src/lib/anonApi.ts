@@ -166,6 +166,20 @@ export async function extendAnonymousTTL(
   return result.extendAnonymousTTL;
 }
 
+const CREATE_ANON_FOLDER_SHARE = `\n  mutation CreateAnonFolderShare($folderId: ID!, $allowContent: Boolean!, $allowPreview: Boolean) {\n    createAnonymousFolderShare(folderId: $folderId, allowContent: $allowContent, allowPreview: $allowPreview) {\n      shareId token\n    }\n  }\n`;
+
+export async function createAnonymousFolderShare(
+  folderId: string,
+  allowContent: boolean,
+  allowPreview: boolean,
+): Promise<{ shareId: string; token: string }> {
+  const result = await gqlRequest<{ createAnonymousFolderShare: { shareId: string; token: string } }>(
+    CREATE_ANON_FOLDER_SHARE,
+    { folderId, allowContent, allowPreview },
+  );
+  return result.createAnonymousFolderShare;
+}
+
 const DELETE_ANON_FILE = `
   mutation DeleteAnonFile($fileId: ID!, $anonSessionId: String!) {
     deleteAnonymousFile(fileId: $fileId, anonSessionId: $anonSessionId)

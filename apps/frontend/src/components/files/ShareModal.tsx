@@ -52,11 +52,22 @@ const CREATE_ANON_SHARE = `
   }
 `;
 
+const CREATE_ANON_FOLDER_SHARE = `
+  mutation CreateAnonFolderShare($folderId: ID!, $allowContent: Boolean!, $allowPreview: Boolean) {
+    createAnonymousFolderShare(folderId: $folderId, allowContent: $allowContent, allowPreview: $allowPreview) {
+      shareId
+      token
+    }
+  }
+`;
+
 interface Props {
   file: {
     id: string;
     name?: string;
   };
+  /** Folder id — when set, mints a folder share (anon) instead of a file share. */
+  folderId?: string;
   onClose: () => void;
   /** When set, the modal uses the no-auth anonymous share mutation instead of the authed one. */
   anonSessionId?: string;
@@ -88,7 +99,7 @@ function statusChipClass(label: string): string {
   return "chip";
 }
 
-export function ShareModal({ file, onClose, anonSessionId }: Props) {
+export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
   const [expiresAt, setExpiresAt] = useState("");
   const [maxViews, setMaxViews] = useState("");
   const [loading, setLoading] = useState(false);
@@ -121,7 +132,13 @@ export function ShareModal({ file, onClose, anonSessionId }: Props) {
 
     try {
       let shareUrl: string;
-      if (anonSessionId) {
+      if (folderId && anonSessionId) {
+        const { createAnonymousFolderShare } = await gqlRequest<{ createAnonymousFolderShare: { shareId: string; token: string } }>(
+          CREATE_ANON_FOLDER_SHARE,
+          { folderId, allowContent: true, allowPreview: true },
+        );
+        shareUrl = `${window.location.origin}/s/${createAnonymousFolderShare.shareId}?t=${createAnonymousFolderShare.token}`;
+      } else if (anonSessionId) {
         const { createAnonymousShare } = await gqlRequest<{ createAnonymousShare: { shareId: string; token: string } }>(
           CREATE_ANON_SHARE,
           { fileId: file.id, allowContent: true, allowPreview: true },

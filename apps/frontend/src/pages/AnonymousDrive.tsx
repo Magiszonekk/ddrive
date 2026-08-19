@@ -67,6 +67,7 @@ export function AnonymousDrive() {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<FolderItem | null>(null);
   const [sharingFile, setSharingFile] = useState<FileItem | null>(null);
+  const [sharingFolder, setSharingFolder] = useState<FolderItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: items = [], isLoading, refetch } = useQuery({
@@ -102,6 +103,7 @@ export function AnonymousDrive() {
           thumbnailBlobId: f.thumbnailBlobId,
           status: f.status,
           createdAt: f.createdAt,
+          expiresAt: f.expiresAt,
         })),
     [items],
   );
@@ -150,6 +152,7 @@ export function AnonymousDrive() {
   };
 
   const handleShare = (file: FileItem) => setSharingFile(file);
+  const handleShareFolder = (folder: FolderItem) => setSharingFolder(folder);
 
   const handleDelete = async (file: FileItem) => {
     try {
@@ -264,6 +267,7 @@ export function AnonymousDrive() {
           onPreview={handleDownload}
           onPlay={handleDownload}
           onShare={handleShare}
+          onShareFolder={handleShareFolder}
           onDelete={handleDelete}
           onDownloadFolder={undefined}
           onRenameFolder={handleRenameFolder}
@@ -281,6 +285,15 @@ export function AnonymousDrive() {
           file={{ id: sharingFile.id, name: sharingFile.name }}
           anonSessionId={anonSessionId}
           onClose={() => setSharingFile(null)}
+        />
+      )}
+
+      {sharingFolder && (
+        <ShareModal
+          file={{ id: sharingFolder.id, name: sharingFolder.name }}
+          folderId={sharingFolder.id}
+          anonSessionId={anonSessionId}
+          onClose={() => setSharingFolder(null)}
         />
       )}
 

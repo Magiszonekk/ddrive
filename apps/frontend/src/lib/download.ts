@@ -259,3 +259,46 @@ function saveBlob(chunks: ArrayBuffer[], fileName: string, mimeType: string) {
     bytes: blob.size,
   };
 }
+
+/** Download an entire shared folder as a ZIP (anonymous/file share viewers). */
+export async function downloadSharedFolderAsZip(
+  shareId: string,
+  token: string,
+  folderName: string,
+  contents: Array<{ id: string; name: string | null; mimeType: string | null; chunkCount: number; kind: "FILE" | "FOLDER" }>,
+  onProgress?: (msg: string) => void,
+): Promise<void> {
+  const entries: Record<string, Uint8Array> = {};
+  onProgress?.("Collecting files…");
+
+  for (const item of contents) {
+    if (item.kind !== "FILE") continue; // shallow zip: folders' sub-trees skipped in MVP
+    const fileName = item.name ?? item.id;
+    const buffers: Uint8Array[] = [];
+    for (let i = 0; i < item.chunkCount; i++) {
+      const body = await fetchBlobBodyShared(`${item.id}:chunk:${i}`, shareId, token);
+      buffers.push(new Uint8Array(body));
+    }
+    const total = buffers.reduce((n, b) => n + b.length, 0);
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const b of buffers) { merged.set(b, off); off += b.length; }
+    entries[fileName] = merged;
+  }
+
+  if (Object.keys(entries).length === 0) {
+    throw new Error("Folder is empty");
+  }
+
+  onProgress?.(`Packing ${Object.keys(entries).length} files…`);
+  const zipped = zipSync(entries, { level: 0 });
+  const blob = new Blob([zipped], { type: "application/zip" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${folderName || "shared-folder"}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
