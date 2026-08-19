@@ -272,6 +272,7 @@ export function AnonymousDrive() {
           onMoveFolder={handleMoveFolder}
           onExtendTtl={handleExtendTtl}
           anonSessionId={anonSessionId}
+          onOpenFolder={openFolder}
         />
       )}
 
