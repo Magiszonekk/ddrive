@@ -510,6 +510,7 @@ export interface AnonymousFileListing {
   createdAt: Date;
   expiresAt: Date | null;
   parentFolderId: string | null;
+  chunkCount: number;
 }
 
 export async function getAnonymousFiles(
@@ -537,6 +538,7 @@ export async function getAnonymousFiles(
       createdAt: true,
       expiresAt: true,
       parentFolderId: true,
+      chunkCount: true,
     },
   });
 }

@@ -128,6 +128,7 @@ export function buildSchema() {
         parentFolderId: ID
         expiresAt: DateTime
         createdAt: DateTime!
+        chunkCount: Int!
       }
 
       type ShareAccess {
@@ -468,6 +469,7 @@ export function buildSchema() {
             thumbnailBlobId: f.thumbnailBlobId,
             totalBytes: f.totalBytes.toString(),
             itemCount: null,
+            chunkCount: f.chunkCount,
             status: f.status,
             parentFolderId: f.parentFolderId,
             expiresAt: f.expiresAt,

@@ -99,7 +99,7 @@ export function AnonymousDrive() {
           mimeType: f.mimeType ?? "application/octet-stream",
           size: f.totalBytes,
           chunkSize: 8 * 1024 * 1024,
-          chunkCount: Math.max(1, Math.ceil(Number(f.totalBytes) / (8 * 1024 * 1024))),
+          chunkCount: f.chunkCount ?? Math.max(1, Math.ceil(Number(f.totalBytes) / (8 * 1024 * 1024))),
           thumbnailBlobId: f.thumbnailBlobId,
           status: f.status,
           createdAt: f.createdAt,
@@ -143,7 +143,7 @@ export function AnonymousDrive() {
         fileId: file.id,
         fileName: file.name,
         mimeType: file.mimeType,
-        manifestBlobId: `${file.id}:chunk:${Math.max(0, Math.ceil(Number(file.size) / (8 * 1024 * 1024)) - 1)}`,
+        manifestBlobId: `${file.id}:chunk:${Math.max(0, file.chunkCount - 1)}`,
         anonSessionId,
         chunkCount: file.chunkCount,
       });
