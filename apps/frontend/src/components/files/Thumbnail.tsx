@@ -7,6 +7,7 @@ interface ThumbnailProps {
   thumbnailBlobId?: string | null;
   mimeType: string;
   className?: string;
+  anonSessionId?: string;
 }
 
 const objectUrlCache = new Map<string, string>();
@@ -19,7 +20,7 @@ function iconFor(mimeType: string) {
 }
 
 /** Lowres thumbnail with an icon fallback while loading / when none exists. */
-export function Thumbnail({ fileId, thumbnailBlobId, mimeType, className }: ThumbnailProps) {
+export function Thumbnail({ fileId, thumbnailBlobId, mimeType, className, anonSessionId }: ThumbnailProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(
     thumbnailBlobId ? objectUrlCache.get(thumbnailBlobId) ?? null : null,
   );
@@ -35,7 +36,7 @@ export function Thumbnail({ fileId, thumbnailBlobId, mimeType, className }: Thum
     let cancelled = false;
     (async () => {
       try {
-        const body = await fetchBlobBody(thumbnailBlobId);
+        const body = await fetchBlobBody(thumbnailBlobId, undefined, anonSessionId);
         if (cancelled) return;
         const url = URL.createObjectURL(new Blob([body]));
         objectUrlCache.set(thumbnailBlobId, url);
@@ -50,10 +51,8 @@ export function Thumbnail({ fileId, thumbnailBlobId, mimeType, className }: Thum
 
   // Small files (already lowres) have no thumbnailBlobId but ARE previewable
   // directly when they're an image — use the original as its own preview.
-  const useOriginalAsPreview = !thumbnailBlobId && mimeType.startsWith("image/");
-  const [originalUrl, setOriginalUrl] = useState<string | null>(
-    useOriginalAsPreview ? objectUrlCache.get(fileId) ?? null : null,
-  );
+  const useOriginalAsPreview = false; // thumbnails are now always generated (thumbnail.ts)
+  const [originalUrl, setOriginalUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!useOriginalAsPreview) return;

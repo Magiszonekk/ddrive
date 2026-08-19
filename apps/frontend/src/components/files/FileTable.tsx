@@ -62,6 +62,7 @@ interface Props {
   onMoveFile?: (fileId: string, targetFolderId: string) => void;
   onMoveFolder?: (folderId: string, targetFolderId: string) => void;
   onExtendTtl?: (file: FileItem) => void;
+  anonSessionId?: string;
 }
 
 type SortKey = "name" | "size" | "date";
@@ -83,7 +84,7 @@ function loadViewMode(): ViewMode {
 export function FileTable({
   files, folders, onDownload, onPreview, onPlay, onDelete, onShare,
   onDownloadFolder, onRenameFolder, onDeleteFolder,
-  onMoveFile, onMoveFolder, onExtendTtl,
+  onMoveFile, onMoveFolder, onExtendTtl, anonSessionId,
 }: Props) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -253,7 +254,7 @@ export function FileTable({
                   className="group flex flex-col overflow-hidden rounded-card border border-rule bg-paper transition-colors duration-short ease-out hover:border-rule-2"
                 >
                   <div className="relative aspect-square w-full overflow-hidden bg-paper-2">
-                    <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} />
+                    <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} anonSessionId={anonSessionId} />
                     <div className="absolute right-1.5 top-1.5 opacity-0 transition-opacity duration-short ease-out group-hover:opacity-100">
                       <FileActionMenu fileName={file.name} onDownload={() => onDownload(file)} onPlay={onPlay && file.status === "READY" && file.mimeType.startsWith("video/") ? () => onPlay(file) : undefined} onShare={onShare && file.status === "READY" ? () => onShare(file) : undefined} onDelete={onDelete ? () => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); } : undefined} />
                     </div>
@@ -345,7 +346,7 @@ export function FileTable({
                 </td>
                 <td className="px-2 py-3">
                   <div className="h-9 w-9 overflow-hidden rounded-md bg-paper-2">
-                    <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} className="h-full w-full object-cover" />
+                    <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} className="h-full w-full object-cover" anonSessionId={anonSessionId} />
                   </div>
                 </td>
                 <td className="px-4 py-3 text-ink">{file.name}</td>

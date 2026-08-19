@@ -232,12 +232,10 @@ export async function generateThumbnailForFile(fileId: string): Promise<void> {
   const isVid = isVideo(mimeType);
   if (!isImg && !isVid) return; // nothing to thumbnail
 
+  // Always generate a lowres preview for images/videos so the workspace shows
+  // a real thumbnail (or a video frame), not a generic icon. Generating is cheap
+  // (single ffmpeg scale) and the original may be large.
   const sizeBytes = Number(file.totalBytes);
-  const threshold = isImg ? config.thumbnail.skipImageBelowBytes : config.thumbnail.skipVideoBelowBytes;
-  if (sizeBytes > 0 && sizeBytes <= threshold) {
-    // Original is already small/lowres — it doubles as its own preview.
-    return;
-  }
 
   const tmpDir = await mkdtemp(path.join(tmpdir(), "ddrive-thumb-"));
   try {
