@@ -17,6 +17,8 @@ interface DownloadOptions {
   mimeType: string;
   manifestBlobId: string;
   anonSessionId?: string;
+  /** Known chunk count (e.g. from an anonymous listing) — skips the authed uploadStatus query. */
+  chunkCount?: number;
 }
 
 interface SharedDownloadOptions {
@@ -49,7 +51,7 @@ export async function downloadFile(options: DownloadOptions): Promise<DownloadRe
   try {
     downloadStore.updateDownload(options.fileId, { status: DownloadStatus.DOWNLOADING });
 
-    const chunkBlobIds = await listChunkBlobIds(options.fileId);
+    const chunkBlobIds = await listChunkBlobIds(options.fileId, options.chunkCount);
     downloadStore.updateDownload(options.fileId, {
       status: DownloadStatus.DOWNLOADING,
       totalChunks: chunkBlobIds.length,
@@ -97,15 +99,19 @@ export async function downloadSharedFile(options: SharedDownloadOptions & { sign
   };
 }
 
-async function listChunkBlobIds(fileId: string): Promise<string[]> {
+async function listChunkBlobIds(fileId: string, knownChunkCount?: number): Promise<string[]> {
+  const count = knownChunkCount ?? (await getChunkCountViaStatus(fileId));
+  return Array.from({ length: count }, (_, i) => `${fileId}:chunk:${i}`);
+}
+
+async function getChunkCountViaStatus(fileId: string): Promise<number> {
   const { uploadStatus } = await gqlRequest<{
     uploadStatus: { chunkCount: number; uploadedChunkIndices: number[] };
   }>(
     `query UploadStatus($fileId: ID!) { uploadStatus(fileId: $fileId) { chunkCount uploadedChunkIndices } }`,
     { fileId },
   );
-  const count = uploadStatus.chunkCount;
-  return Array.from({ length: count }, (_, i) => `${fileId}:chunk:${i}`);
+  return uploadStatus.chunkCount;
 }
 
 async function downloadChunksConcurrently(
