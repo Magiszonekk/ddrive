@@ -293,12 +293,13 @@ export function FileTable({
               <SortHeader label="Name" sortKey="name" current={sort} onSort={handleSort} />
               <SortHeader label="Size" sortKey="size" current={sort} onSort={handleSort} />
               <SortHeader label="Date" sortKey="date" current={sort} onSort={handleSort} />
+              <th className="px-4 py-3 text-left font-mono text-xs font-medium uppercase tracking-wide text-muted">Expires</th>
               <th className="w-32" />
             </tr>
           </thead>
           <tbody>
             {isEmpty && (
-              <tr><td colSpan={6} className="px-4 py-16 text-center text-sm text-muted"><EmptyCopy /></td></tr>
+              <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-muted"><EmptyCopy /></td></tr>
             )}
 
             {folders.map((folder) => (
@@ -330,6 +331,7 @@ export function FileTable({
                   </span>
                 </td>
                 <td className="px-4 py-3 text-sm text-muted">—</td>
+                <td className="px-4 py-3 text-sm text-muted">—</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
                     {onDownloadFolder && <IconButton onClick={() => onDownloadFolder(folder)} title="Download as ZIP" className="text-accent hover:bg-accent/10"><FolderDown size={15} /></IconButton>}
@@ -342,7 +344,7 @@ export function FileTable({
             ))}
 
             {paginated.length === 0 && !isEmpty && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-muted">No files match your search</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted">No files match your search</td></tr>
             )}
 
             {paginated.map((file) => (
@@ -365,12 +367,16 @@ export function FileTable({
                 </td>
                 <td className="px-4 py-3 text-ink">{file.name}</td>
                 <td className="px-4 py-3 text-sm text-muted"><span className="font-mono tabular-nums">{formatSize(file.size)}</span></td>
-                <td className="px-4 py-3 text-sm text-muted">
+                <td className="px-4 py-3 text-sm text-muted" title={formatDateFull(file.createdAt)}>
                   <span className="font-mono tabular-nums">{formatDate(file.createdAt)}</span>
-                  {file.expiresAt && (
-                    <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-warning">
+                </td>
+                <td className="px-4 py-3 text-sm">
+                  {file.expiresAt ? (
+                    <span className="inline-flex items-center gap-1 text-warning" title={formatDateFull(file.expiresAt)}>
                       <Clock size={11} />{ttlLabel(file.expiresAt)}
-                    </div>
+                    </span>
+                  ) : (
+                    <span className="text-muted">—</span>
                   )}
                 </td>
                 <td className="px-4 py-3">
@@ -511,7 +517,7 @@ function FileCard({ file, onDownload, onPlay, onShare, onDelete, onExtendTtl }: 
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-ink">{file.name}</p>
               <p className="mt-1 text-xs text-muted">
-                <span className="font-mono tabular-nums">{formatSize(file.size)} · {formatDate(file.createdAt)}</span>
+                <span className="font-mono tabular-nums" title={formatDateFull(file.createdAt)}>{formatDate(file.createdAt)}</span>
                 {ttl && <span className="ml-2 inline-flex items-center gap-1 text-warning"><Clock size={11} />{ttl}</span>}
               </p>
             </div>
@@ -588,7 +594,8 @@ function formatSize(bytes: string): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function formatDate(value: string): string { return new Date(value).toLocaleString(); }
+function formatDate(value: string): string { return new Date(value).toLocaleDateString(); }
+function formatDateFull(value: string): string { return new Date(value).toLocaleString(); }
 function getFileBadge(mimeType: string): string {
   if (mimeType.startsWith("video/")) return "video";
   if (mimeType.startsWith("image/")) return "image";
