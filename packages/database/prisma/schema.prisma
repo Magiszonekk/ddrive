@@ -191,7 +191,7 @@ model Folder {
 model Share {
   shareId      String      @id @default(cuid())
   ownerUserId  String
-  fileId       String
+  fileId       String?
   folderId     String?
   shareType    ShareType   @default(FILE)
   tokenHash    String      @unique
@@ -205,7 +205,7 @@ model Share {
   revokedAt    DateTime?
 
   owner   User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  file    File          @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  file    File?         @relation(fields: [fileId], references: [id], onDelete: Cascade)
   folder  Folder?       @relation(fields: [folderId], references: [id], onDelete: Cascade)
 
   reports ShareReport[]

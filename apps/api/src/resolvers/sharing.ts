@@ -94,7 +94,6 @@ export async function createAnonymousFolderShare(
   const share = await db.share.create({
     data: {
       ownerUserId: folder.ownerUserId,
-      fileId: "", // Folder shares have no single file; kept for schema compatibility
       folderId,
       shareType: "FOLDER" as const,
       tokenHash: hashToken(token),
@@ -181,15 +180,15 @@ export async function accessShare(
   return {
     shareId: share.shareId,
     shareType: "FILE",
-    fileId: share.fileId,
+    fileId: share.fileId ?? "",
     folderId: null,
-    name: share.file.name,
-    mimeType: share.file.mimeType,
-    primaryManifestBlobId: share.file.primaryManifestBlobId,
-    previewBlobId: share.allowPreview ? share.file.previewBlobId : null,
-    thumbnailBlobId: share.allowPreview ? share.file.thumbnailBlobId : null,
-    posterBlobId: share.allowPreview ? share.file.posterBlobId : null,
-    chunkCount: share.file.chunkCount,
+    name: share.file?.name ?? "Shared file",
+    mimeType: share.file?.mimeType ?? null,
+    primaryManifestBlobId: share.file?.primaryManifestBlobId ?? null,
+    previewBlobId: share.file ? (share.allowPreview ? share.file.previewBlobId : null) : null,
+    thumbnailBlobId: share.file ? (share.allowPreview ? share.file.thumbnailBlobId : null) : null,
+    posterBlobId: share.file ? (share.allowPreview ? share.file.posterBlobId : null) : null,
+    chunkCount: share.file?.chunkCount ?? 0,
     allowContent: share.allowContent,
     allowPreview: share.allowPreview,
   };
@@ -220,10 +219,10 @@ export async function resolveShareForPage(shareId: string, presentedToken: strin
 export async function claimShare(userId: string, shareId: string, presentedToken: string): Promise<boolean> {
   const share = await resolveShareForPage(shareId, presentedToken);
   if (!share) throw new Error("Share not found or expired");
-  if (!share.file.isAnonymous) throw new Error("This file is already owned by an account");
+  if (!share.file) throw new Error("This share has no file (folder shares cannot be claimed)");
 
   await db.file.update({
-    where: { id: share.fileId },
+    where: { id: share.fileId ?? "" },
     data: { ownerUserId: userId, isAnonymous: false, anonSessionId: null, expiresAt: null },
   });
   return true;
