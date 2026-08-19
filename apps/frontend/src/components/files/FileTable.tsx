@@ -240,7 +240,7 @@ export function FileTable({
                   key={`folder-grid-${folder.id}`}
                   onClick={() => openFolder(folder.id)}
                   {...folderDragHandlers(folder.id)}
-                  className={`group relative flex cursor-pointer flex-col items-center gap-2 rounded-card border p-4 text-center transition-colors duration-short ease-out ${isOver(folder.id) ? "border-accent/60 bg-accent/10" : "border-rule bg-paper hover:border-rule-2 hover:bg-paper-2"}`}
+                  className={`group relative z-30 flex cursor-pointer flex-col items-center gap-2 rounded-card border p-4 text-center transition-colors duration-short ease-out ${isOver(folder.id) ? "border-accent/60 bg-accent/10" : "border-rule bg-paper hover:border-rule-2 hover:bg-paper-2"}`}
                 >
                   <Folder size={32} className={isOver(folder.id) ? "text-accent" : "text-muted"} />
                   <span className="w-full truncate text-sm text-ink">{folder.name}</span>
@@ -249,7 +249,7 @@ export function FileTable({
                     <button
                       onClick={(e) => { e.stopPropagation(); onShareFolder(folder); }}
                       title="Share"
-                      className="absolute right-1.5 top-1.5 rounded-md p-1.5 text-muted opacity-0 transition-opacity duration-short ease-out hover:bg-paper-2 hover:text-ink group-hover:opacity-100"
+                      className="absolute right-1.5 top-1.5 z-20 rounded-md p-1.5 text-muted opacity-0 transition-opacity duration-short ease-out hover:bg-paper-2 hover:text-ink group-hover:opacity-100"
                     >
                       <Share2 size={15} />
                     </button>
@@ -264,11 +264,11 @@ export function FileTable({
                     e.dataTransfer.setData(DRAG_TYPE, encodeDrag({ type: "file", id: file.id }));
                     e.dataTransfer.effectAllowed = "move";
                   }}
-                  className="group flex flex-col overflow-hidden rounded-card border border-rule bg-paper transition-colors duration-short ease-out hover:border-rule-2"
+                  className="group relative z-30 flex flex-col overflow-visible rounded-card border border-rule bg-paper transition-colors duration-short ease-out hover:border-rule-2"
                 >
                   <div className="relative aspect-square w-full overflow-hidden bg-paper-2">
                     <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} anonSessionId={anonSessionId} />
-                    <div className="absolute right-1.5 top-1.5 opacity-0 transition-opacity duration-short ease-out group-hover:opacity-100">
+                    <div className="absolute right-1.5 top-1.5 z-20 opacity-0 transition-opacity duration-short ease-out group-hover:opacity-100">
                       <FileActionMenu fileName={file.name} onDownload={() => onDownload(file)} onPlay={onPlay && file.status === "READY" && file.mimeType.startsWith("video/") ? () => onPlay(file) : undefined} onShare={onShare && file.status === "READY" ? () => onShare(file) : undefined} onDelete={onDelete ? () => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); } : undefined} />
                     </div>
                   </div>
@@ -480,7 +480,7 @@ function FolderActionMenu({ folderName, onOpen, onDownload, onRename, onDelete, 
         <MoreVertical size={16} />
       </button>
       {open && (
-        <div className="absolute right-0 top-10 z-dropdown min-w-44 overflow-hidden rounded-card border border-rule bg-paper shadow-[0_1px_2px_oklch(24%_0.02_258/0.08)]">
+        <div className="absolute right-0 top-10 z-50 min-w-44 overflow-hidden rounded-card border border-rule bg-paper shadow-[0_1px_2px_oklch(24%_0.02_258/0.08)]">
           {actions.map((action) => {
             const Icon = action.icon;
             return (
@@ -555,7 +555,7 @@ function FileActionMenu({ fileName, onDownload, onPlay, onShare, onDelete, onExt
         <MoreVertical size={18} />
       </button>
       {open && (
-        <div className="absolute right-0 top-12 z-dropdown min-w-44 overflow-hidden rounded-card border border-rule bg-paper shadow-[0_1px_2px_oklch(24%_0.02_258/0.08)]">
+        <div className="absolute right-0 top-12 z-50 min-w-44 overflow-hidden rounded-card border border-rule bg-paper shadow-[0_1px_2px_oklch(24%_0.02_258/0.08)]">
           {actions.map((action) => {
             const Icon = action.icon;
             return (
