@@ -84,7 +84,7 @@ export function Login() {
         <button type="submit" disabled={loading} className={authPrimaryButtonClass}>
           {loading ? "Logging in…" : "Log in"}
         </button>
-        <Link to="/upload" className={authSecondaryButtonClass}>
+        <Link to="/drive" className={authSecondaryButtonClass}>
           Continue without an account
         </Link>
       </form>

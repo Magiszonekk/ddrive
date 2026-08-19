@@ -13,6 +13,14 @@ const FOLDER_PATH_QUERY = `
   }
 `;
 
+const ANON_FOLDER_PATH_QUERY = `
+  query AnonFolderPath($anonSessionId: String!, $folderId: ID!) {
+    anonymousFolderPath(anonSessionId: $anonSessionId, folderId: $folderId) {
+      id name
+    }
+  }
+`;
+
 interface FolderCrumb {
   id: string;
   name: string;
@@ -22,22 +30,34 @@ interface Props {
   folderId: string | null;
   onMoveFile?: (fileId: string, targetFolderId: string | null) => void;
   onMoveFolder?: (folderId: string, targetFolderId: string | null) => void;
+  /** Anonymous workspace mode — uses anon-scoped path query + /drive routing. */
+  anonSessionId?: string;
 }
 
-export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) {
+export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder, anonSessionId }: Props) {
   const [dragOverId, setDragOverId] = useState<string | "root" | null>(null);
 
   const { data: crumbs = [] } = useQuery<FolderCrumb[]>({
-    queryKey: ["folderPath", folderId],
+    queryKey: ["folderPath", folderId, anonSessionId ?? "auth"],
     enabled: Boolean(folderId),
     queryFn: async () => {
-      const result = await gqlRequest<{
-        folderPath: { id: string; name: string }[];
-      }>(FOLDER_PATH_QUERY, { folderId });
-
+      if (anonSessionId) {
+        const result = await gqlRequest<{ anonymousFolderPath: { id: string; name: string }[] }>(
+          ANON_FOLDER_PATH_QUERY,
+          { anonSessionId, folderId: folderId! },
+        );
+        return result.anonymousFolderPath.map((f) => ({ id: f.id, name: f.name }));
+      }
+      const result = await gqlRequest<{ folderPath: { id: string; name: string }[] }>(
+        FOLDER_PATH_QUERY,
+        { folderId: folderId! },
+      );
       return result.folderPath.map((f) => ({ id: f.id, name: f.name }));
     },
   });
+
+  const rootHref = anonSessionId ? "/drive" : "/";
+  const folderHref = (id: string) => anonSessionId ? `/drive?folder=${id}` : `/folder/${id}`;
 
   const canDrop = Boolean(onMoveFile || onMoveFolder);
 
@@ -75,7 +95,7 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) 
       <div className="flex items-center gap-2 text-sm md:hidden">
         {folderId ? (
           <Link
-            to={parentId ? `/folder/${parentId}` : "/"}
+            to={parentId ? folderHref(parentId) : rootHref}
             className="inline-flex items-center gap-1 text-muted transition-colors duration-short ease-out hover:text-ink"
           >
             <ChevronLeft size={16} />
@@ -89,7 +109,7 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) 
       <div className="hidden items-center gap-1 text-sm md:flex">
         <span {...dropProps("root")} className={crumbStyle("root")}>
           <Link
-            to="/"
+            to={rootHref}
             className={folderId ? "text-muted hover:text-ink" : "font-medium text-ink"}
             onClick={(e) => dragOverId === "root" && e.preventDefault()}
           >
@@ -107,7 +127,7 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder }: Props) 
                   <span className="max-w-[20ch] truncate font-medium text-ink">{currentName}</span>
                 ) : (
                   <Link
-                    to={`/folder/${crumb.id}`}
+                    to={folderHref(crumb.id)}
                     className="max-w-[16ch] truncate text-muted hover:text-ink"
                     onClick={(e) => dragOverId === crumb.id && e.preventDefault()}
                   >

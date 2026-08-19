@@ -43,12 +43,23 @@ const REVOKE_SHARE = `
   }
 `;
 
+const CREATE_ANON_SHARE = `
+  mutation CreateAnonShare($fileId: ID!, $allowContent: Boolean!, $allowPreview: Boolean) {
+    createAnonymousShare(fileId: $fileId, allowContent: $allowContent, allowPreview: $allowPreview) {
+      shareId
+      token
+    }
+  }
+`;
+
 interface Props {
   file: {
     id: string;
     name?: string;
   };
   onClose: () => void;
+  /** When set, the modal uses the no-auth anonymous share mutation instead of the authed one. */
+  anonSessionId?: string;
 }
 
 interface ShareItem {
@@ -77,7 +88,7 @@ function statusChipClass(label: string): string {
   return "chip";
 }
 
-export function ShareModal({ file, onClose }: Props) {
+export function ShareModal({ file, onClose, anonSessionId }: Props) {
   const [expiresAt, setExpiresAt] = useState("");
   const [maxViews, setMaxViews] = useState("");
   const [loading, setLoading] = useState(false);
@@ -89,6 +100,7 @@ export function ShareModal({ file, onClose }: Props) {
   const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
   const [showRevoked, setShowRevoked] = useState(false);
   const loadShares = async () => {
+    if (anonSessionId) return; // anon shares: no list/revoke management in MVP
     setLoadingShares(true);
     try {
       const result = await gqlRequest<{ shares: ShareItem[] }>(SHARES_QUERY, { fileId: file.id });
@@ -108,17 +120,25 @@ export function ShareModal({ file, onClose }: Props) {
     setError("");
 
     try {
-      const { createShare } = await gqlRequest<{ createShare: { shareId: string; token: string } }>(CREATE_SHARE, {
-        fileId: file.id,
-        allowContent: true,
-        allowPreview: true,
-        expiresAt: expiresAt || null,
-        maxViews: maxViews ? Number(maxViews) : null,
-      });
+      let shareUrl: string;
+      if (anonSessionId) {
+        const { createAnonymousShare } = await gqlRequest<{ createAnonymousShare: { shareId: string; token: string } }>(
+          CREATE_ANON_SHARE,
+          { fileId: file.id, allowContent: true, allowPreview: true },
+        );
+        shareUrl = `${window.location.origin}/s/${createAnonymousShare.shareId}?t=${createAnonymousShare.token}`;
+      } else {
+        const { createShare } = await gqlRequest<{ createShare: { shareId: string; token: string } }>(CREATE_SHARE, {
+          fileId: file.id,
+          allowContent: true,
+          allowPreview: true,
+          expiresAt: expiresAt || null,
+          maxViews: maxViews ? Number(maxViews) : null,
+        });
+        shareUrl = `${window.location.origin}/s/${createShare.shareId}?t=${createShare.token}`;
+      }
 
-      const url = `${window.location.origin}/s/${createShare.shareId}?t=${createShare.token}`;
-      setShareUrl(url);
-      await loadShares();
+      setShareUrl(shareUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create share link");
     } finally {

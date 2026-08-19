@@ -11,13 +11,22 @@ const CREATE_FOLDER = `
   }
 `;
 
+const CREATE_ANON_FOLDER = `
+  mutation CreateAnonFolder($name: String!, $parentFolderId: ID, $anonSessionId: String!) {
+    createAnonymousFolder(name: $name, parentFolderId: $parentFolderId, anonSessionId: $anonSessionId) {
+      id
+    }
+  }
+`;
+
 interface Props {
   parentFolderId: string | null;
   onCreated: () => void;
   onClose: () => void;
+  anonSessionId?: string;
 }
 
-export function NewFolderModal({ parentFolderId, onCreated, onClose }: Props) {
+export function NewFolderModal({ parentFolderId, onCreated, onClose, anonSessionId }: Props) {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -29,7 +38,11 @@ export function NewFolderModal({ parentFolderId, onCreated, onClose }: Props) {
     setLoading(true);
     setError("");
     try {
-      await gqlRequest(CREATE_FOLDER, { name: trimmed, parentFolderId });
+      if (anonSessionId) {
+        await gqlRequest(CREATE_ANON_FOLDER, { name: trimmed, parentFolderId, anonSessionId });
+      } else {
+        await gqlRequest(CREATE_FOLDER, { name: trimmed, parentFolderId });
+      }
       onCreated();
       onClose();
     } catch (err) {

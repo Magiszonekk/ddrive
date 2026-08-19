@@ -42,14 +42,23 @@ export async function initUpload(
 export async function initAnonymousUpload(
   input: InitUploadRequest,
   anonSessionId: string | null,
+  parentFolderId: string | null = null,
 ): Promise<{ fileId: string; status: "uploading" }> {
   const systemUserId = await getSystemUserId();
   const expiresAt = new Date(Date.now() + config.anonymousTTLDays * 86_400_000);
 
+  // If nesting into a folder, the folder must belong to this same anon session.
+  if (parentFolderId) {
+    const parent = await db.folder.findFirst({
+      where: { id: parentFolderId, isAnonymous: true, anonSessionId: anonSessionId ?? undefined },
+    });
+    if (!parent) throw new Error("Target folder not found");
+  }
+
   const file = await db.file.create({
     data: {
       ownerUserId: systemUserId,
-      parentFolderId: null, // anonymous uploads never nest into a real user's folder tree
+      parentFolderId,
       name: input.name ?? null,
       mimeType: input.mimeType ?? null,
       primaryManifestBlobId: null,
@@ -71,9 +80,17 @@ export async function commitAnonymousManifest(
   totalBytes: string,
   chunkCount: number,
   blobs: UploadedBlobTransportInput[],
+  parentFolderId: string | null = null,
 ): Promise<{ success: boolean }> {
   const systemUserId = await getSystemUserId();
-  return commitManifest(systemUserId, fileId, manifestBlobId, totalBytes, chunkCount, blobs);
+  const result = await commitManifest(systemUserId, fileId, manifestBlobId, totalBytes, chunkCount, blobs);
+  if (parentFolderId) {
+    await db.file.update({
+      where: { id: fileId },
+      data: { parentFolderId },
+    });
+  }
+  return result;
 }
 
 /** Files an anonymous browser session has uploaded — localStorage UUID, convenience only, not auth. */
@@ -85,8 +102,29 @@ export async function getAnonymousUploadsBySession(anonSessionId: string) {
   });
 }
 
-/** Permanently removes anonymous files past their TTL. Run on a timer, see index.ts. */
+/** Permanently removes anonymous files AND folders past their TTL. Run on a timer, see index.ts. */
 export async function purgeExpiredAnonymousFiles(): Promise<number> {
+  const systemUserId = await getSystemUserId();
+
+  // Folders first (so we don't trip FK/soft-delete ordering issues), then files.
+  const folders = await db.folder.findMany({
+    where: { isAnonymous: true, expiresAt: { lt: new Date() } },
+  });
+  for (const folder of folders) {
+    try {
+      await db.file.updateMany({
+        where: { ownerUserId: systemUserId, parentFolderId: folder.id, deletedAt: null },
+        data: { deletedAt: new Date() },
+      });
+      await db.folder.delete({ where: { id: folder.id } });
+    } catch (error) {
+      console.warn(JSON.stringify({
+        ts: new Date().toISOString(), scope: "anon-ttl-sweep", type: "folder_purge_failed",
+        folderId: folder.id, error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
   const files = await db.file.findMany({
     where: { isAnonymous: true, expiresAt: { lt: new Date() }, deletedAt: null },
   });
@@ -461,6 +499,86 @@ export async function getFile(ownerUserId: string, fileId: string) {
   return db.file.findFirst({ where: { id: fileId, ownerUserId, deletedAt: null } });
 }
 
+/** Anonymous session files within a folder (Phase 8). */
+export interface AnonymousFileListing {
+  id: string;
+  name: string | null;
+  mimeType: string | null;
+  thumbnailBlobId: string | null;
+  totalBytes: bigint;
+  status: string;
+  createdAt: Date;
+  expiresAt: Date | null;
+  parentFolderId: string | null;
+}
+
+export async function getAnonymousFiles(
+  anonSessionId: string,
+  parentFolderId: string | null,
+): Promise<AnonymousFileListing[]> {
+  const systemUserId = await getSystemUserId();
+  return db.file.findMany({
+    where: {
+      ownerUserId: systemUserId,
+      isAnonymous: true,
+      anonSessionId,
+      parentFolderId,
+      deletedAt: null,
+      status: "READY",
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      name: true,
+      mimeType: true,
+      thumbnailBlobId: true,
+      totalBytes: true,
+      status: true,
+      createdAt: true,
+      expiresAt: true,
+      parentFolderId: true,
+    },
+  });
+}
+
+export async function moveAnonymousFile(
+  fileId: string,
+  parentFolderId: string | null,
+  anonSessionId: string,
+): Promise<boolean> {
+  const systemUserId = await getSystemUserId();
+  const file = await db.file.findFirst({
+    where: { id: fileId, ownerUserId: systemUserId, isAnonymous: true, anonSessionId, deletedAt: null },
+  });
+  if (!file) throw new Error("File not found");
+
+  if (parentFolderId) {
+    const parent = await db.folder.findFirst({
+      where: { id: parentFolderId, isAnonymous: true, anonSessionId },
+    });
+    if (!parent) throw new Error("Target folder not found");
+  }
+
+  await db.file.update({ where: { id: fileId }, data: { parentFolderId } });
+  return true;
+}
+
+export async function extendAnonymousTTL(
+  fileId: string,
+  anonSessionId: string,
+): Promise<boolean> {
+  const systemUserId = await getSystemUserId();
+  const file = await db.file.findFirst({
+    where: { id: fileId, ownerUserId: systemUserId, isAnonymous: true, anonSessionId, deletedAt: null },
+  });
+  if (!file) throw new Error("File not found");
+  await db.file.update({
+    where: { id: fileId },
+    data: { expiresAt: new Date(Date.now() + config.anonymousTTLDays * 86_400_000) },
+  });
+  return true;
+}
+
 export async function getStorageUsage(ownerUserId: string) {
   const result = await db.file.aggregate({
     where: { ownerUserId, deletedAt: null, status: "READY" },
@@ -831,4 +949,20 @@ export async function runHealthCheck(
     skipped: allResults.filter((r) => r.status === "SKIPPED").length,
     durationMs: Math.round(performance.now() - startedAt),
   };
+}
+
+/** Soft-delete an anonymous file, scoped by anonSessionId (Phase 8). */
+export async function deleteAnonymousFile(
+  fileId: string,
+  anonSessionId: string,
+): Promise<boolean> {
+  const systemUserId = await getSystemUserId();
+  const file = await db.file.findFirst({
+    where: { id: fileId, ownerUserId: systemUserId, isAnonymous: true, anonSessionId, deletedAt: null },
+  });
+  if (!file) throw new Error("File not found");
+
+  await db.file.update({ where: { id: fileId }, data: { deletedAt: new Date() } });
+  await db.share.deleteMany({ where: { fileId } });
+  return true;
 }

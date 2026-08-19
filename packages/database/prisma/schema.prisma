@@ -170,6 +170,12 @@ model Folder {
   name           String
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  // Anonymous workspaces (Phase 8, non-E2EE fork): mirror File's anon
+  // fields so a logged-out browser session can own a folder tree scoped by
+  // its localStorage UUID, with the same TTL sweep as anon files.
+  isAnonymous    Boolean   @default(false)
+  anonSessionId  String?
+  expiresAt      DateTime?
 
   owner        User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   parent       Folder?  @relation("FolderTree", fields: [parentFolderId], references: [id], onDelete: SetNull)
@@ -177,6 +183,8 @@ model Folder {
   files        File[]
 
   @@index([ownerUserId, parentFolderId])
+  @@index([isAnonymous, expiresAt])
+  @@index([anonSessionId])
 }
 
 model Share {
