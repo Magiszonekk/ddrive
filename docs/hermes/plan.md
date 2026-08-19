@@ -407,6 +407,61 @@ list/grid toggle — scoped to their browser session, no account required.
 
 ---
 
+## Phase 8 — Anonymous "private drive" (logged-out workspace) — DONE (live 2026-08-19)
+
+**Goal:** turn the current "drop a file, get a link" anon flow into a real
+logged-out workspace — a table/grid of the browser's uploaded files, folder
+navigation, thumbnails, metadata (size, created date, TTL), sharing, and folder
+management. No JWT — scoped by the browser's anonSessionId (localStorage).
+
+**Backend (API + Prisma):**
+- `Folder` got `isAnonymous` + `anonSessionId` (files already had them).
+- New GraphQL queries: `anonymousFiles(anonSessionId, parentFolderId)`,
+  `anonymousFolderPath(anonSessionId, folderId)`.
+- `AnonymousFile` type gained `kind`/`itemCount`/`thumbnailBlobId`/`parentFolderId`
+  so a single list conveys both files and folders.
+- New mutations: `createAnonymousFolder`, `renameAnonymousFolder`,
+  `deleteAnonymousFolder`, `moveAnonymousFolder`, `moveAnonymousFile`,
+  `extendAnonymousTTL`, `deleteAnonymousFile` — every one scoped by
+  `anonSessionId` (verified: a different session sees 0 items).
+- `initAnonymousUpload` / `commitAnonymousManifest` accept `parentFolderId`
+  (no longer hardcode null).
+- `handleBlobContent` (GET /api/blob/:id) now allows anon access when
+  `X-Anon-Session-Id` matches the owning anonymous file (thumbnail + download path).
+- TTL sweep (`purgeExpiredAnonymousFiles`) extended to folders.
+
+**Frontend:**
+- `AnonymousDrive.tsx` — full workspace page (route `/drive`). Lists files +
+  folders via `useQuery`, drag-drop move, upload into current folder, share,
+  delete, rename, TTL extend, breadcrumb nav (anon-scoped).
+- `anonApi.ts` — thin wrappers mirroring `gqlRequest` without JWT.
+- `FileTable` gained `expiresAt` on `FileItem`, a TTL column + "Extend TTL"
+  action, and `onExtendTtl` prop (anonymous-friendly, also harmless for authed).
+- `FolderBreadcrumb` / `NewFolderModal` / `RenameFolderModal` / `ShareModal`
+  gained optional `anonSessionId` (use anon mutations when present).
+- `Thumbnail` + `download.ts` + `api.ts` accept `anonSessionId` so previews and
+  downloads work without a JWT.
+- `anonUpload.ts` no longer auto-creates a share (file now lives in the
+  workspace); `uploadAnonymousFile` takes `parentFolderId`.
+- Login "Continue without an account" now links to `/drive` (was `/upload`).
+- `/upload` (quick drop) now offers "Open in my files" → `/drive` after upload.
+
+**Deploy:** commit `e143246` → origin/main → OVH pull → `db:push` (prod
+`10.8.0.4:5434`, Folder columns added) → frontend build → API restart.
+
+**Live verification (real GraphQL + anon blob GET on ddrive.cikowice.pl):**
+- folder create + file-in-folder listing ✓
+- scoping: session B sees 0 items from session A ✓
+- `createAnonymousShare` returns shareId+token ✓
+- GET /api/blob/:id with `X-Anon-Session-Id` → 200, 90000 bytes (thumbnail/download) ✓
+- move file between root↔folder ✓
+- `extendAnonymousTTL` advances expiresAt by 30d ✓
+- delete file/folder ✓
+- (rate-limit note: `enforceRateLimit(ctx.ip,"auth")` caps anon mutations per IP;
+  real browsers won't hit it, but scripted bursts do — wait ~30s between bursts)
+
+---
+
 ## Open questions to resolve during implementation (not blocking, but noted)
 
 - Exact TTL number for anonymous uploads (concept says "~1-2 months, TBD").
