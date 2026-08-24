@@ -266,7 +266,14 @@ export function FileTable({
                   }}
                   className="group relative z-30 flex flex-col overflow-visible rounded-card border border-rule bg-paper transition-colors duration-short ease-out hover:border-rule-2"
                 >
-                  <div className="relative aspect-square w-full overflow-hidden bg-paper-2">
+                  <div className="relative aspect-square w-full overflow-hidden bg-paper-2"
+                    onClick={() => {
+                      if (file.status !== "READY") return;
+                      if (file.mimeType.startsWith("image/") && onPreview) onPreview(file);
+                      else if ((file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/")) && onPlay) onPlay(file);
+                    }}
+                    style={{ cursor: file.status === "READY" && ["image/", "video/", "audio/"].some((p) => file.mimeType.startsWith(p)) ? "pointer" : undefined }}
+                  >
                     <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} anonSessionId={anonSessionId} />
                     <div className="absolute right-1.5 top-1.5 z-20 opacity-0 transition-opacity duration-short ease-out group-hover:opacity-100">
                       <FileActionMenu fileName={file.name} onDownload={() => onDownload(file)} onPlay={onPlay && file.status === "READY" && file.mimeType.startsWith("video/") ? () => onPlay(file) : undefined} onShare={onShare && file.status === "READY" ? () => onShare(file) : undefined} onDelete={onDelete ? () => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); } : undefined} />

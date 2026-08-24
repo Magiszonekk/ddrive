@@ -14,6 +14,8 @@ import { FolderBreadcrumb } from "../components/files/FolderBreadcrumb.js";
 import { ShareModal } from "../components/files/ShareModal.js";
 import { NewFolderModal } from "../components/files/NewFolderModal.js";
 import { RenameFolderModal } from "../components/files/RenameFolderModal.js";
+import { ImageLightbox } from "../components/media/ImageLightbox.js";
+import { VideoPlayer } from "../components/video/VideoPlayer.js";
 import {
   getAnonymousFiles,
   getAnonymousFolderPath,
@@ -61,6 +63,8 @@ export function AnonymousDrive() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const pushNotification = useNotificationStore((s) => s.push);
+  const [lightboxFile, setLightboxFile] = useState<FileItem | null>(null);
+  const [playingFile, setPlayingFile] = useState<FileItem | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const currentFolderId = searchParams.get("folder");
 
@@ -281,8 +285,14 @@ export function AnonymousDrive() {
           files={files}
           folders={folders}
           onDownload={handleDownload}
-          onPreview={handleDownload}
-          onPlay={handleDownload}
+          onPreview={(file) => {
+            if (file.mimeType.startsWith("image/")) setLightboxFile(file);
+            else handleDownload(file);
+          }}
+          onPlay={(file) => {
+            if (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/")) setPlayingFile(file);
+            else handleDownload(file);
+          }}
           onShare={handleShare}
           onShareFolder={handleShareFolder}
           onDelete={handleDelete}
@@ -329,6 +339,27 @@ export function AnonymousDrive() {
           anonSessionId={anonSessionId}
           onRenamed={refresh}
           onClose={() => setRenamingFolder(null)}
+        />
+      )}
+
+      {lightboxFile && (
+        <ImageLightbox
+          fileId={lightboxFile.id}
+          fileName={lightboxFile.name}
+          mimeType={lightboxFile.mimeType}
+          anonSessionId={anonSessionId}
+          onClose={() => setLightboxFile(null)}
+        />
+      )}
+
+      {playingFile && (
+        <VideoPlayer
+          file={{
+            fileId: playingFile.id,
+            fileName: playingFile.name,
+            mimeType: playingFile.mimeType,
+          }}
+          onClose={() => setPlayingFile(null)}
         />
       )}
     </div>

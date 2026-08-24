@@ -78,22 +78,33 @@ function extractAuthToken(req: Request, url: URL): string | null {
 export async function handleStreamRequest(req: Request, params: { fileId: string }): Promise<Response> {
   const url = new URL(req.url);
   const token = extractAuthToken(req, url);
-  if (!token) return Response.json({ error: "Authentication required" }, { status: 401 });
 
   let userId: string;
-  try {
-    const payload = await verifySessionToken(token);
-    userId = payload.userId;
-  } catch {
-    return Response.json({ error: "Invalid or expired token" }, { status: 401 });
+  let anonSessionId: string | null = null;
+  if (token) {
+    try {
+      const payload = await verifySessionToken(token);
+      userId = payload.userId;
+    } catch {
+      return Response.json({ error: "Invalid or expired token" }, { status: 401 });
+    }
+  } else {
+    // Anonymous path (Phase 8): media elements can't set custom headers, so
+    // accept the anon session as ?anon= (or the standard X-Anon-Session-Id).
+    // Scope strictly to files uploaded by that browser session.
+    anonSessionId = url.searchParams.get("anon") ?? req.headers.get("x-anon-session-id");
+    if (!anonSessionId) return Response.json({ error: "Authentication required" }, { status: 401 });
+    userId = ""; // resolved from the anon-scoped file row below
   }
 
   const file = await db.file.findFirst({
-    where: { id: params.fileId, ownerUserId: userId, deletedAt: null, status: "READY" },
+    where: anonSessionId
+      ? { id: params.fileId, isAnonymous: true, anonSessionId, deletedAt: null, status: "READY" }
+      : { id: params.fileId, ownerUserId: userId, deletedAt: null, status: "READY" },
   });
   if (!file) return Response.json({ error: "File not found" }, { status: 404 });
 
-  const chunks = await getOrderedChunks(params.fileId, userId);
+  const chunks = await getOrderedChunks(params.fileId, file.ownerUserId);
   if (chunks.length === 0) return Response.json({ error: "File has no chunks" }, { status: 404 });
 
   const totalSize = chunks.reduce((sum, c) => sum + c.plaintextSizeBytes, 0);

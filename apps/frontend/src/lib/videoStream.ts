@@ -18,8 +18,10 @@ export interface StreamFileInfo {
  * Returns a URL a <video>/<audio> element can use directly. The auth token
  * is passed as a query param because media elements can't set custom
  * headers — acceptable for the dev-preview MVP (see plan.md Phase 3 notes).
+ * For anonymous sessions pass anonSessionId instead (?anon=).
  */
-export function getStreamUrl(fileId: string): string {
+export function getStreamUrl(fileId: string, anonSessionId?: string): string {
+  if (anonSessionId) return `/api/stream/${fileId}?anon=${encodeURIComponent(anonSessionId)}`;
   const token = useAuthStore.getState().token ?? "";
   return `/api/stream/${fileId}?token=${encodeURIComponent(token)}`;
 }

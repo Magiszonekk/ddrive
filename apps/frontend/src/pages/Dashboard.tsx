@@ -19,6 +19,7 @@ import { NewFolderModal } from "../components/files/NewFolderModal.js";
 import { RenameFolderModal } from "../components/files/RenameFolderModal.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { ImagePreview } from "../components/media/ImagePreview.js";
+import { ImageLightbox } from "../components/media/ImageLightbox.js";
 
 const DELETE_FILE_MUTATION = `
   mutation DeleteFile($fileId: ID!) {
@@ -100,6 +101,7 @@ export function Dashboard() {
     mimeType: string;
   } | null>(null);
   const [imagePreview, setImagePreview] = useState<PreviewResult | null>(null);
+  const [lightboxFile, setLightboxFile] = useState<{ id: string; name: string; mimeType: string } | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["files", folderId ?? null],
@@ -231,6 +233,11 @@ export function Dashboard() {
     mimeType: string;
     manifestBlobId?: string;
   }) => {
+    if (file.mimeType.startsWith("image/")) {
+      // Large preview: fullscreen lightbox with the original bytes.
+      setLightboxFile({ id: file.id, name: file.name, mimeType: file.mimeType });
+      return;
+    }
     try {
       const nextPreview = await createOwnerPreview({
         fileName: file.name,
@@ -466,6 +473,15 @@ export function Dashboard() {
       )}
 
       {sharingFile && <ShareModal file={sharingFile} onClose={() => setSharingFile(null)} />}
+
+      {lightboxFile && (
+        <ImageLightbox
+          fileId={lightboxFile.id}
+          fileName={lightboxFile.name}
+          mimeType={lightboxFile.mimeType}
+          onClose={() => setLightboxFile(null)}
+        />
+      )}
 
       {playingFile && (
         <VideoPlayer
