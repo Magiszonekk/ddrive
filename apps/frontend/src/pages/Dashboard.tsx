@@ -152,6 +152,19 @@ export function Dashboard() {
 
       return { files, folders };
     },
+    // Thumbnails are generated server-side a few seconds AFTER the upload
+    // finishes. Poll lightly while any image/video still lacks its
+    // thumbnailBlobId so tiles fill in without a manual refresh.
+    refetchInterval: (query) => {
+      const rows = query.state.data?.files ?? [];
+      const pending = rows.some(
+        (f) =>
+          f.status === "READY" &&
+          !f.thumbnailBlobId &&
+          (f.mimeType.startsWith("image/") || f.mimeType.startsWith("video/")),
+      );
+      return pending ? 3000 : false;
+    },
   });
 
   const uiFiles = data?.files ?? [];

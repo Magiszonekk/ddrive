@@ -8,6 +8,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderPlus, Upload as UploadIcon, RefreshCw, LogIn, Clock, AlertTriangle } from "lucide-react";
+import { useNotificationStore } from "../stores/notifications.js";
 import { FileTable, type FileItem, type FolderItem } from "../components/files/FileTable.js";
 import { FolderBreadcrumb } from "../components/files/FolderBreadcrumb.js";
 import { ShareModal } from "../components/files/ShareModal.js";
@@ -59,6 +60,7 @@ export function AnonymousDrive() {
   const anonSessionId = useMemo(() => getOrCreateAnonSessionId(), []);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const pushNotification = useNotificationStore((s) => s.push);
   const [searchParams, setSearchParams] = useSearchParams();
   const currentFolderId = searchParams.get("folder");
 
@@ -73,6 +75,20 @@ export function AnonymousDrive() {
   const { data: items = [], isLoading, refetch } = useQuery({
     queryKey: ["anonFiles", anonSessionId, currentFolderId ?? "root"],
     queryFn: () => getAnonymousFiles(anonSessionId, currentFolderId),
+    // Thumbnails are generated server-side a few seconds AFTER the upload
+    // commit returns. Poll lightly while any image/video still lacks its
+    // thumbnailBlobId so tiles fill in without a manual refresh.
+    refetchInterval: (query) => {
+      const rows = query.state.data ?? [];
+      const pending = rows.some(
+        (it) =>
+          it.kind === "FILE" &&
+          it.status === "READY" &&
+          !it.thumbnailBlobId &&
+          (it.mimeType?.startsWith("image/") || it.mimeType?.startsWith("video/")),
+      );
+      return pending ? 3000 : false;
+    },
   });
 
   const folders: FolderItem[] = useMemo(
@@ -127,9 +143,9 @@ export function AnonymousDrive() {
         }, currentFolderId);
       }
       refresh();
-      alert("Upload complete");
+      pushNotification("success", "Upload complete");
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Upload failed");
+      pushNotification("error", err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
       setUploadProgress(0);
@@ -148,7 +164,7 @@ export function AnonymousDrive() {
         chunkCount: file.chunkCount,
       });
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Download failed");
+      pushNotification("error", err instanceof Error ? err.message : "Download failed");
     }
   };
 
@@ -160,7 +176,7 @@ export function AnonymousDrive() {
       await deleteAnonymousFile(file.id, anonSessionId);
       refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Delete failed");
+      pushNotification("error", err instanceof Error ? err.message : "Delete failed");
     }
   };
 
@@ -169,7 +185,7 @@ export function AnonymousDrive() {
       await deleteAnonymousFolder(folder.id, anonSessionId);
       refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Delete failed");
+      pushNotification("error", err instanceof Error ? err.message : "Delete failed");
     }
   };
 
@@ -180,7 +196,7 @@ export function AnonymousDrive() {
       await moveAnonymousFile(fileId, targetFolderId, anonSessionId);
       refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Move failed");
+      pushNotification("error", err instanceof Error ? err.message : "Move failed");
     }
   };
 
@@ -189,7 +205,7 @@ export function AnonymousDrive() {
       await moveAnonymousFolder(folderId, targetFolderId, anonSessionId);
       refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Move failed");
+      pushNotification("error", err instanceof Error ? err.message : "Move failed");
     }
   };
 
@@ -197,9 +213,9 @@ export function AnonymousDrive() {
     try {
       await extendAnonymousTTL(file.id, anonSessionId);
       refresh();
-      alert("TTL extended");
+      pushNotification("success", "TTL extended");
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed");
+      pushNotification("error", err instanceof Error ? err.message : "Failed to extend TTL");
     }
   };
 
