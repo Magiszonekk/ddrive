@@ -37,6 +37,19 @@ const SHARES_QUERY = `
   }
 `;
 
+const LIST_ANON_SHARES = `
+  query ListAnonShares($anonSessionId: String!) {
+    listAnonymousShares(anonSessionId: $anonSessionId) {
+      shareId
+      status
+      expiresAt
+      maxViews
+      viewCount
+      createdAt
+    }
+  }
+`;
+
 const REVOKE_SHARE = `
   mutation RevokeShare($shareId: ID!) {
     revokeShare(shareId: $shareId)
@@ -44,8 +57,8 @@ const REVOKE_SHARE = `
 `;
 
 const CREATE_ANON_SHARE = `
-  mutation CreateAnonShare($fileId: ID!, $allowContent: Boolean!, $allowPreview: Boolean) {
-    createAnonymousShare(fileId: $fileId, allowContent: $allowContent, allowPreview: $allowPreview) {
+  mutation CreateAnonShare($fileId: ID!, $allowContent: Boolean!, $allowPreview: Boolean, $expiresAt: String, $maxViews: Int, $anonSessionId: String) {
+    createAnonymousShare(fileId: $fileId, allowContent: $allowContent, allowPreview: $allowPreview, expiresAt: $expiresAt, maxViews: $maxViews, anonSessionId: $anonSessionId) {
       shareId
       token
     }
@@ -53,8 +66,8 @@ const CREATE_ANON_SHARE = `
 `;
 
 const CREATE_ANON_FOLDER_SHARE = `
-  mutation CreateAnonFolderShare($folderId: ID!, $allowContent: Boolean!, $allowPreview: Boolean) {
-    createAnonymousFolderShare(folderId: $folderId, allowContent: $allowContent, allowPreview: $allowPreview) {
+  mutation CreateAnonFolderShare($folderId: ID!, $allowContent: Boolean!, $allowPreview: Boolean, $expiresAt: String, $maxViews: Int, $anonSessionId: String) {
+    createAnonymousFolderShare(folderId: $folderId, allowContent: $allowContent, allowPreview: $allowPreview, expiresAt: $expiresAt, maxViews: $maxViews, anonSessionId: $anonSessionId) {
       shareId
       token
     }
@@ -111,12 +124,19 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
   const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRevoked, setShowRevoked] = useState(false);
+
   const loadShares = async () => {
-    if (anonSessionId) return; // anon shares: no list/revoke management in MVP
     setLoadingShares(true);
     try {
-      const result = await gqlRequest<{ shares: ShareItem[] }>(SHARES_QUERY, { fileId: file.id });
-      setShares(result.shares ?? []);
+      if (anonSessionId) {
+        const result = await gqlRequest<{ listAnonymousShares: ShareItem[] }>(LIST_ANON_SHARES, {
+          anonSessionId,
+        });
+        setShares(result.listAnonymousShares ?? []);
+      } else {
+        const result = await gqlRequest<{ shares: ShareItem[] }>(SHARES_QUERY, { fileId: file.id });
+        setShares(result.shares ?? []);
+      }
     } catch (err) {
       console.error("Failed to load shares:", err);
     } finally {
@@ -136,13 +156,27 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
       if (folderId && anonSessionId) {
         const { createAnonymousFolderShare } = await gqlRequest<{ createAnonymousFolderShare: { shareId: string; token: string } }>(
           CREATE_ANON_FOLDER_SHARE,
-          { folderId, allowContent: true, allowPreview: true },
+          {
+            folderId,
+            allowContent: true,
+            allowPreview: true,
+            expiresAt: expiresAt || null,
+            maxViews: maxViews ? Number(maxViews) : null,
+            anonSessionId,
+          },
         );
         shareUrl = `${window.location.origin}/s/${createAnonymousFolderShare.shareId}?t=${createAnonymousFolderShare.token}`;
       } else if (anonSessionId) {
         const { createAnonymousShare } = await gqlRequest<{ createAnonymousShare: { shareId: string; token: string } }>(
           CREATE_ANON_SHARE,
-          { fileId: file.id, allowContent: true, allowPreview: true },
+          {
+            fileId: file.id,
+            allowContent: true,
+            allowPreview: true,
+            expiresAt: expiresAt || null,
+            maxViews: maxViews ? Number(maxViews) : null,
+            anonSessionId,
+          },
         );
         shareUrl = `${window.location.origin}/s/${createAnonymousShare.shareId}?t=${createAnonymousShare.token}`;
       } else {
@@ -157,6 +191,8 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
       }
 
       setShareUrl(shareUrl);
+      // Refresh the list so the new link appears immediately
+      void loadShares();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create share link");
     } finally {
@@ -171,6 +207,7 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
   };
 
   const handleRevoke = async (shareId: string) => {
+    if (anonSessionId) return; // anon shares can't be revoked server-side yet
     setRevokingShareId(shareId);
     try {
       await gqlRequest(REVOKE_SHARE, { shareId });
@@ -200,18 +237,16 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
             <div>
               <h3 className="mb-3 text-sm font-medium text-ink">Create new share link</h3>
               <div className="space-y-4 rounded-md bg-paper-2 p-4">
-                {!anonSessionId && (
-                  <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-2">
-                    <input
-                      type="checkbox"
-                      checked={showAdvanced}
-                      onChange={(e) => setShowAdvanced(e.target.checked)}
-                      className="h-4 w-4 rounded border-rule-2 text-accent focus:ring-accent"
-                    />
-                    Advanced options
-                  </label>
-                )}
-                {showAdvanced && !anonSessionId && (
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={showAdvanced}
+                    onChange={(e) => setShowAdvanced(e.target.checked)}
+                    className="h-4 w-4 rounded border-rule-2 text-accent focus:ring-accent"
+                  />
+                  Advanced options
+                </label>
+                {showAdvanced && (
                   <>
                     <div>
                       <label className={authLabelClass}>
@@ -268,10 +303,10 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
             )}
           </div>
 
-          {!anonSessionId && (
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-medium text-ink">Existing share links</h3>
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-medium text-ink">Existing share links</h3>
+              {!anonSessionId && (
                 <button
                   onClick={() => setShowRevoked((v) => !v)}
                   className={`rounded-md px-2 py-1 text-xs font-medium transition-colors duration-micro ease-out ${
@@ -280,79 +315,82 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
                 >
                   {showRevoked ? "Hide revoked" : "Show revoked"}
                 </button>
-              </div>
-              <div className="rounded-md bg-paper-2 p-4">
-                {loadingShares ? (
-                  <p className="text-sm text-muted">Loading shares…</p>
-                ) : (() => {
-                  const visible = shares.filter((s) => showRevoked || s.status !== "REVOKED");
-                  if (shares.length === 0) return <p className="text-sm text-muted">No share links yet.</p>;
-                  if (visible.length === 0)
-                    return (
-                      <p className="text-sm text-muted">
-                        All links are revoked.{" "}
-                        <button onClick={() => setShowRevoked(true)} className="text-muted underline hover:text-ink-2">
-                          Show them
-                        </button>
-                      </p>
-                    );
+              )}
+            </div>
+            <div className="rounded-md bg-paper-2 p-4">
+              {loadingShares ? (
+                <p className="text-sm text-muted">Loading shares…</p>
+              ) : (() => {
+                const visible = shares.filter((s) => showRevoked || s.status !== "REVOKED");
+                if (shares.length === 0) return <p className="text-sm text-muted">No share links yet.</p>;
+                if (visible.length === 0)
                   return (
-                    <div className="max-h-88 divide-y divide-rule overflow-y-auto pr-0.5">
-                      {[...visible]
-                        .sort((a, b) => {
-                          const aActive = statusLabel(a.status, a.expiresAt) === "Active";
-                          const bActive = statusLabel(b.status, b.expiresAt) === "Active";
-                          return aActive === bActive ? 0 : aActive ? -1 : 1;
-                        })
-                        .map((share) => {
-                          const label = statusLabel(share.status, share.expiresAt);
-                          const active = label === "Active";
-                          return (
-                            <div key={share.shareId} className="py-3 first:pt-0 last:pb-0">
-                              <div className="mb-2 flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 text-sm text-ink">
-                                    <Link2 size={14} className="shrink-0 text-muted" />
-                                    <span className="truncate font-mono text-xs">{share.shareId}</span>
-                                  </div>
-                                  <div className="mt-1 font-mono text-xs tabular-nums text-muted">
-                                    Created: {formatDate(share.createdAt)}
-                                  </div>
+                    <p className="text-sm text-muted">
+                      All links are revoked.{" "}
+                      <button onClick={() => setShowRevoked(true)} className="text-muted underline hover:text-ink-2">
+                        Show them
+                      </button>
+                    </p>
+                  );
+                return (
+                  <div className="max-h-88 divide-y divide-rule overflow-y-auto pr-0.5">
+                    {[...visible]
+                      .sort((a, b) => {
+                        const aActive = statusLabel(a.status, a.expiresAt) === "Active";
+                        const bActive = statusLabel(b.status, b.expiresAt) === "Active";
+                        return aActive === bActive ? 0 : aActive ? -1 : 1;
+                      })
+                      .map((share) => {
+                        const label = statusLabel(share.status, share.expiresAt);
+                        const active = label === "Active";
+                        const canRevoke = active && !anonSessionId && revokingShareId !== share.shareId;
+                        return (
+                          <div key={share.shareId} className="py-3 first:pt-0 last:pb-0">
+                            <div className="mb-2 flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 text-sm text-ink">
+                                  <Link2 size={14} className="shrink-0 text-muted" />
+                                  <span className="truncate font-mono text-xs">{share.shareId}</span>
                                 </div>
-                                <span className={statusChipClass(label)}>{label}</span>
-                              </div>
-                              <div className="grid grid-cols-2 gap-2 text-xs text-muted">
-                                <div>
-                                  Expires:{" "}
-                                  <span className="font-mono tabular-nums text-ink-2">{formatDate(share.expiresAt)}</span>
-                                </div>
-                                <div>
-                                  Views:{" "}
-                                  <span className="font-mono tabular-nums text-ink-2">
-                                    {share.viewCount}
-                                    {share.maxViews ? ` / ${share.maxViews}` : ""}
-                                  </span>
+                                <div className="mt-1 font-mono text-xs tabular-nums text-muted">
+                                  Created: {formatDate(share.createdAt)}
                                 </div>
                               </div>
+                              <span className={statusChipClass(label)}>{label}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs text-muted">
+                              <div>
+                                Expires:{" "}
+                                <span className="font-mono tabular-nums text-ink-2">{formatDate(share.expiresAt)}</span>
+                              </div>
+                              <div>
+                                Views:{" "}
+                                <span className="font-mono tabular-nums text-ink-2">
+                                  {share.viewCount}
+                                  {share.maxViews ? ` / ${share.maxViews}` : ""}
+                                </span>
+                              </div>
+                            </div>
+                            {canRevoke && (
                               <div className="mt-3 flex justify-end">
                                 <button
                                   onClick={() => handleRevoke(share.shareId)}
-                                  disabled={!active || revokingShareId === share.shareId}
+                                  disabled={revokingShareId === share.shareId}
                                   className="inline-flex items-center gap-2 rounded-md border border-error px-3 py-2 text-xs font-medium text-error transition-colors duration-micro ease-out hover:bg-error hover:text-error-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-error"
                                 >
                                   <ShieldX size={14} />
                                   {revokingShareId === share.shareId ? "Revoking…" : "Revoke"}
                                 </button>
                               </div>
-                            </div>
-                          );
-                        })}
-                    </div>
-                  );
-                })()}
-              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                );
+              })()}
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

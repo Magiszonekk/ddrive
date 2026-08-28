@@ -57,6 +57,9 @@ export async function createAnonymousShare(
   fileId: string,
   allowContent: boolean,
   allowPreview: boolean,
+  expiresAt?: string | null,
+  maxViews?: number | null,
+  anonSessionId?: string | null,
 ): Promise<{ shareId: string; token: string }> {
   const file = await db.file.findFirst({
     where: { id: fileId, isAnonymous: true, deletedAt: null, status: "READY" },
@@ -73,6 +76,9 @@ export async function createAnonymousShare(
       tokenHash: hashToken(token),
       allowContent,
       allowPreview,
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      maxViews: maxViews ?? null,
+      anonSessionId: anonSessionId ?? null,
     },
   });
 
@@ -84,6 +90,9 @@ export async function createAnonymousFolderShare(
   folderId: string,
   allowContent: boolean,
   allowPreview: boolean,
+  expiresAt?: string | null,
+  maxViews?: number | null,
+  anonSessionId?: string | null,
 ): Promise<{ shareId: string; token: string }> {
   const folder = await db.folder.findFirst({
     where: { id: folderId, isAnonymous: true },
@@ -99,10 +108,20 @@ export async function createAnonymousFolderShare(
       tokenHash: hashToken(token),
       allowContent,
       allowPreview,
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      maxViews: maxViews ?? null,
+      anonSessionId: anonSessionId ?? null,
     },
   });
 
   return { shareId: share.shareId, token };
+}
+
+export async function listAnonymousShares(anonSessionId: string) {
+  return db.share.findMany({
+    where: { anonSessionId },
+    orderBy: { createdAt: "desc" },
+  });
 }
 
 export async function getShares(ownerUserId: string, fileId: string) {
