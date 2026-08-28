@@ -455,6 +455,10 @@ export function buildSchema() {
           enforceRateLimit(ctx.ip, "auth");
           return sharingResolvers.accessShare(args.shareId, args.token);
         },
+        listAnonymousShares: async (_parent: unknown, args: { anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return sharingResolvers.listAnonymousShares(args.anonSessionId);
+        },
         myAnonymousUploads: async (_parent: unknown, args: { anonSessionId: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
           return fileResolvers.getAnonymousUploadsBySession(args.anonSessionId);
@@ -714,9 +718,6 @@ export function buildSchema() {
         createAnonymousFolderShare: async (_parent: unknown, args: { folderId: string; allowContent: boolean; allowPreview?: boolean; expiresAt?: string | null; maxViews?: number | null; anonSessionId?: string | null }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
           return sharingResolvers.createAnonymousFolderShare(args.folderId, args.allowContent, args.allowPreview ?? false, args.expiresAt ?? null, args.maxViews ?? null, args.anonSessionId ?? null);
-        },
-        listAnonymousShares: async (_parent: unknown, args: { anonSessionId: string }, ctx: Context) => {
-          return sharingResolvers.listAnonymousShares(args.anonSessionId);
         },
         reportShare: async (_parent: unknown, args: { shareId: string; reason: string; note?: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
