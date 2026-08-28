@@ -2,6 +2,8 @@ import { Routes, Route, Navigate } from "react-router";
 import { useAuthStore } from "./stores/auth.js";
 import { Login } from "./pages/Login.js";
 import { Register } from "./pages/Register.js";
+import { ForgotPassword } from "./pages/ForgotPassword.js";
+import { ResetPassword } from "./pages/ResetPassword.js";
 import { Dashboard } from "./pages/Dashboard.js";
 import { SharedFile } from "./pages/SharedFile.js";
 import { AnonymousUpload } from "./pages/AnonymousUpload.js";
@@ -39,6 +41,8 @@ export function App() {
       <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/share/:shareId" element={<SharedFile />} />
       <Route path="/upload" element={<AnonymousUpload />} />
       <Route path="/drive" element={<AnonymousDrive />} />

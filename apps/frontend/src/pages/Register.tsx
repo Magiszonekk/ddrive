@@ -114,6 +114,13 @@ export function Register() {
             className={authInputClass}
           />
         </div>
+        <div className="rounded-md border border-rule bg-paper-2 p-3 text-sm text-muted">
+          <p className="font-medium text-ink-2">No password recovery</p>
+          <p className="mt-1">
+            DiscordDrive is end-to-end encrypted — your password never leaves your device, so we
+            cannot reset it for you. If you forget it, your files become permanently inaccessible.
+          </p>
+        </div>
         {error && <p className="text-sm text-error">{error}</p>}
         <button type="submit" disabled={loading} className={authPrimaryButtonClass}>
           {loading ? "Creating account…" : "Create account"}

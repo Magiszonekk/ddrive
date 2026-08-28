@@ -80,6 +80,11 @@ export function Login() {
             className={authInputClass}
           />
         </div>
+        <div className="text-sm text-muted">
+          <Link to="/forgot-password" className="font-medium text-accent underline-offset-2 hover:underline">
+            Forgot your password?
+          </Link>
+        </div>
         {error && <p className="text-sm text-error">{error}</p>}
         <button type="submit" disabled={loading} className={authPrimaryButtonClass}>
           {loading ? "Logging in…" : "Log in"}

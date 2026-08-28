@@ -301,6 +301,9 @@ export function buildSchema() {
           newPassword: String!
         ): Boolean!
 
+        requestPasswordReset(email: String!): Boolean!
+        resetPassword(token: String!, newPassword: String!): Boolean!
+
         initUpload(
           parentFolderId: ID
           name: String
@@ -556,6 +559,23 @@ export function buildSchema() {
           enforceRateLimit(ctx.ip, "auth");
           const auth = requireInteractive(ctx);
           return authResolvers.changePassword(auth.userId, args.currentPassword, args.newPassword);
+        },
+        requestPasswordReset: async (
+          _parent: unknown,
+          args: { email: string },
+          ctx: Context,
+        ) => {
+          requireFullMode();
+          enforceRateLimit(ctx.ip, "auth");
+          return authResolvers.requestPasswordReset(args.email, ctx.ip);
+        },
+        resetPassword: async (
+          _parent: unknown,
+          args: { token: string; newPassword: string },
+          _ctx: Context,
+        ) => {
+          requireFullMode();
+          return authResolvers.resetPassword(args.token, args.newPassword);
         },
         initUpload: async (_parent: unknown, args: {
           parentFolderId?: string;

@@ -9,9 +9,17 @@ import {
   invalidateApiKeyCache,
   hashApiKeyAuthPart,
 } from "../middleware/auth.js";
+import { enforceRateLimit } from "../middleware/rate-limit.js";
+import { serverConfig } from "@ddv4/config/server";
+import { sendPasswordResetEmail } from "../lib/mailer.js";
 import type { RegisterRequest, LoginResponse } from "@ddv4/types/api";
 import { pluginRegistry } from "../plugin-registry.js";
 
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function hashResetToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 // Password hashing: argon2id with per-password salt (argon2 bakes the salt
 // into the encoded $argon2id$... string, so no separate salt column is needed).
 //
@@ -251,6 +259,57 @@ export async function changePassword(
     where: { id: userId },
     data: { passwordHash: await hashPassword(newPassword) },
   });
+
+  return true;
+}
+
+export async function requestPasswordReset(email: string, ip: string): Promise<boolean> {
+  // Rate limiting is enforced at the schema layer (same policy as changePassword).
+  // Generic response: always true, even if no such account, to avoid
+  // leaking which emails are registered (account enumeration).
+  const user = await db.user.findUnique({ where: { email } });
+  if (user) {
+    const rawToken = randomBytes(32).toString("base64url");
+    const expires = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+    await db.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetToken: hashResetToken(rawToken),
+        passwordResetExpires: expires,
+      },
+    });
+    const link = `${serverConfig.frontendUrl}/reset-password?token=${rawToken}`;
+    await sendPasswordResetEmail(user.email, link);
+  }
+  return true;
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<boolean> {
+  const user = await db.user.findFirst({
+    where: {
+      passwordResetToken: hashResetToken(token),
+      passwordResetExpires: { gt: new Date() },
+    },
+  });
+  if (!user) throw new Error("Invalid or expired reset token");
+
+  await db.user.update({
+    where: { id: user.id },
+    data: {
+      passwordHash: await hashPassword(newPassword),
+      passwordResetToken: null,
+      passwordResetExpires: null,
+    },
+  });
+
+  // Security: revoke all device sessions so a stolen/older session is killed.
+  const sessions = await db.deviceSession.findMany({
+    where: { userId: user.id, revokedAt: null },
+  });
+  for (const s of sessions) {
+    await db.deviceSession.update({ where: { id: s.id }, data: { revokedAt: new Date() } });
+    invalidateSessionCache(s.id);
+  }
 
   return true;
 }

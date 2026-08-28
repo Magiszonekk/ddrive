@@ -118,4 +118,12 @@ export const serverConfig = {
   replicaWebhooks: collectReplicaWebhooks(),
   replicaBotConfigs: collectReplicaBotConfigs(),
   replicaTelegramBotConfigs: collectReplicaTelegramBotConfigs(),
+  smtp: {
+    host: process.env.SMTP_HOST?.trim() ?? "",
+    port: parseInt(process.env.SMTP_PORT ?? "587", 10),
+    secure: (process.env.SMTP_SECURE ?? "false").toLowerCase() === "true",
+    user: process.env.SMTP_USER?.trim() ?? "",
+    pass: process.env.SMTP_PASS?.trim() ?? "",
+    from: process.env.MAIL_FROM?.trim() ?? "noreply@cikowice.pl",
+  },
 };
