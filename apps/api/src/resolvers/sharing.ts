@@ -79,6 +79,7 @@ export async function createAnonymousShare(
       expiresAt: expiresAt ? new Date(expiresAt) : null,
       maxViews: maxViews ?? null,
       anonSessionId: anonSessionId ?? null,
+      anonToken: anonSessionId ? token : null,
     },
   });
 
@@ -111,6 +112,7 @@ export async function createAnonymousFolderShare(
       expiresAt: expiresAt ? new Date(expiresAt) : null,
       maxViews: maxViews ?? null,
       anonSessionId: anonSessionId ?? null,
+      anonToken: anonSessionId ? token : null,
     },
   });
 
@@ -118,10 +120,23 @@ export async function createAnonymousFolderShare(
 }
 
 export async function listAnonymousShares(anonSessionId: string) {
-  return db.share.findMany({
+  const shares = await db.share.findMany({
     where: { anonSessionId },
     orderBy: { createdAt: "desc" },
   });
+  // Expose the raw token (stored only for anon session-owned shares) so the
+  // owner can re-copy the link without re-minting. Authed shares keep token null.
+  return shares.map((s) => ({ ...s, token: s.anonToken ?? null }));
+}
+
+export async function revokeAnonymousShare(shareId: string, anonSessionId: string): Promise<boolean> {
+  const share = await db.share.findFirst({ where: { shareId, anonSessionId } });
+  if (!share) throw new Error("Share not found or not owned by this session");
+  await db.share.update({
+    where: { shareId },
+    data: { status: "REVOKED", revokedAt: new Date() },
+  });
+  return true;
 }
 
 export async function getShares(ownerUserId: string, fileId: string) {

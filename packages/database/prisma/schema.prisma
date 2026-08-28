@@ -206,6 +206,7 @@ model Share {
   createdAt    DateTime    @default(now())
   revokedAt    DateTime?
   anonSessionId String?
+  anonToken    String?
 
   owner   User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   file    File?         @relation(fields: [fileId], references: [id], onDelete: Cascade)

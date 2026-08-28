@@ -41,11 +41,13 @@ const LIST_ANON_SHARES = `
   query ListAnonShares($anonSessionId: String!) {
     listAnonymousShares(anonSessionId: $anonSessionId) {
       shareId
+      shareType
       status
       expiresAt
       maxViews
       viewCount
       createdAt
+      token
     }
   }
 `;
@@ -53,6 +55,12 @@ const LIST_ANON_SHARES = `
 const REVOKE_SHARE = `
   mutation RevokeShare($shareId: ID!) {
     revokeShare(shareId: $shareId)
+  }
+`;
+
+const REVOKE_ANON_SHARE = `
+  mutation RevokeAnonShare($shareId: ID!, $anonSessionId: String!) {
+    revokeAnonymousShare(shareId: $shareId, anonSessionId: $anonSessionId)
   }
 `;
 
@@ -88,11 +96,13 @@ interface Props {
 
 interface ShareItem {
   shareId: string;
+  shareType?: string;
   status: string;
   expiresAt?: string | null;
   maxViews?: number | null;
   viewCount: number;
   createdAt: string;
+  token?: string | null;
 }
 
 function formatDate(value?: string | null): string {
@@ -124,6 +134,12 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
   const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRevoked, setShowRevoked] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyShare = (shareId: string, url: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedId(shareId);
+    setTimeout(() => setCopiedId((cur) => (cur === shareId ? null : cur)), 2000);
+  };
 
   const loadShares = async () => {
     setLoadingShares(true);
@@ -207,10 +223,13 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
   };
 
   const handleRevoke = async (shareId: string) => {
-    if (anonSessionId) return; // anon shares can't be revoked server-side yet
     setRevokingShareId(shareId);
     try {
-      await gqlRequest(REVOKE_SHARE, { shareId });
+      if (anonSessionId) {
+        await gqlRequest(REVOKE_ANON_SHARE, { shareId, anonSessionId });
+      } else {
+        await gqlRequest(REVOKE_SHARE, { shareId });
+      }
       await loadShares();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to revoke share link");
@@ -343,7 +362,10 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
                       .map((share) => {
                         const label = statusLabel(share.status, share.expiresAt);
                         const active = label === "Active";
-                        const canRevoke = active && !anonSessionId && revokingShareId !== share.shareId;
+                        const shareUrl = share.token
+                          ? `${window.location.origin}/s/${share.shareId}?t=${share.token}`
+                          : null;
+                        const rowCopied = copiedId === share.shareId;
                         return (
                           <div key={share.shareId} className="py-3 first:pt-0 last:pb-0">
                             <div className="mb-2 flex items-start justify-between gap-3">
@@ -371,18 +393,25 @@ export function ShareModal({ file, folderId, onClose, anonSessionId }: Props) {
                                 </span>
                               </div>
                             </div>
-                            {canRevoke && (
-                              <div className="mt-3 flex justify-end">
+                            <div className="mt-3 flex justify-end gap-2">
+                              {shareUrl && (
                                 <button
-                                  onClick={() => handleRevoke(share.shareId)}
-                                  disabled={revokingShareId === share.shareId}
-                                  className="inline-flex items-center gap-2 rounded-md border border-error px-3 py-2 text-xs font-medium text-error transition-colors duration-micro ease-out hover:bg-error hover:text-error-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-error"
+                                  onClick={() => copyShare(share.shareId, shareUrl)}
+                                  className="inline-flex items-center gap-1.5 rounded-md border border-rule-2 bg-paper px-3 py-2 text-xs font-medium text-ink-2 transition-colors duration-micro ease-out hover:bg-paper-2 hover:text-ink"
                                 >
-                                  <ShieldX size={14} />
-                                  {revokingShareId === share.shareId ? "Revoking…" : "Revoke"}
+                                  {rowCopied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+                                  {rowCopied ? "Copied" : "Copy link"}
                                 </button>
-                              </div>
-                            )}
+                              )}
+                              <button
+                                onClick={() => handleRevoke(share.shareId)}
+                                disabled={!active || revokingShareId === share.shareId}
+                                className="inline-flex items-center gap-2 rounded-md border border-error px-3 py-2 text-xs font-medium text-error transition-colors duration-micro ease-out hover:bg-error hover:text-error-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-error"
+                              >
+                                <ShieldX size={14} />
+                                {revokingShareId === share.shareId ? "Revoking…" : "Revoke"}
+                              </button>
+                            </div>
                           </div>
                         );
                       })}

@@ -169,6 +169,7 @@ export function buildSchema() {
         maxViews: Int
         viewCount: Int!
         createdAt: DateTime!
+        token: String
       }
 
       type ShareCreateResult {
@@ -363,6 +364,7 @@ export function buildSchema() {
         revokeShare(shareId: ID!): Boolean!
         createAnonymousShare(fileId: ID!, allowContent: Boolean!, allowPreview: Boolean, expiresAt: String, maxViews: Int, anonSessionId: String): ShareCreateResult!
         createAnonymousFolderShare(folderId: ID!, allowContent: Boolean!, allowPreview: Boolean, expiresAt: String, maxViews: Int, anonSessionId: String): ShareCreateResult!
+        revokeAnonymousShare(shareId: ID!, anonSessionId: String!): Boolean!
         reportShare(shareId: ID!, reason: String!, note: String): Boolean!
         claimShare(shareId: ID!, token: String!): Boolean!
         # Anonymous workspace (Phase 8) — no auth; scoped by anonSessionId.
@@ -718,6 +720,10 @@ export function buildSchema() {
         createAnonymousFolderShare: async (_parent: unknown, args: { folderId: string; allowContent: boolean; allowPreview?: boolean; expiresAt?: string | null; maxViews?: number | null; anonSessionId?: string | null }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
           return sharingResolvers.createAnonymousFolderShare(args.folderId, args.allowContent, args.allowPreview ?? false, args.expiresAt ?? null, args.maxViews ?? null, args.anonSessionId ?? null);
+        },
+        revokeAnonymousShare: async (_parent: unknown, args: { shareId: string; anonSessionId: string }, ctx: Context) => {
+          enforceRateLimit(ctx.ip, "auth");
+          return sharingResolvers.revokeAnonymousShare(args.shareId, args.anonSessionId);
         },
         reportShare: async (_parent: unknown, args: { shareId: string; reason: string; note?: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
