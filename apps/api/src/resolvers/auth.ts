@@ -1,6 +1,7 @@
 // ddrive v4 — Auth resolvers
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import argon2 from "argon2";
 import { db } from "@ddv4/database";
 import {
   signToken,
@@ -11,16 +12,35 @@ import {
 import type { RegisterRequest, LoginResponse } from "@ddv4/types/api";
 import { pluginRegistry } from "../plugin-registry.js";
 
-// TODO(phase2): replace sha256 with argon2id for password hashing
-function hashPassword(password: string): string {
-  return createHash("sha256").update(password).digest("hex");
+// Password hashing: argon2id with per-password salt (argon2 bakes the salt
+// into the encoded $argon2id$... string, so no separate salt column is needed).
+//
+// Backward compatibility: accounts created before this change store a raw
+// 64-char lowercase hex sha256(password) digest (no salt). `verifyPassword`
+// accepts both forms and, on a successful legacy login, transparently
+// re-hashes the password with argon2 (lazy migration) so old hashes don't
+// linger forever. New passwords are always stored as argon2.
+const LEGACY_SHA256_RE = /^[0-9a-f]{64}$/;
+
+export async function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password, { type: argon2.argon2id });
 }
 
-function verifyPassword(password: string, hash: string): boolean {
-  const presented = Buffer.from(hashPassword(password), "hex");
-  const stored = Buffer.from(hash, "hex");
-  if (presented.length !== stored.length) return false;
-  return timingSafeEqual(presented, stored);
+export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  if (LEGACY_SHA256_RE.test(hash)) {
+    // Old unsalted sha256 digest.
+    const presented = Buffer.from(createHash("sha256").update(password).digest("hex"), "hex");
+    const stored = Buffer.from(hash, "hex");
+    if (presented.length !== stored.length) return false;
+    return timingSafeEqual(presented, stored);
+  }
+  // argon2 encoded hash (or anything unrecognised) — defer to argon2, which
+  // throws on malformed input; treat that as a failed verification.
+  try {
+    return await argon2.verify(hash, password);
+  } catch {
+    return false;
+  }
 }
 
 const SESSION_REFRESH_TTL_DAYS = 180;
@@ -157,7 +177,7 @@ export async function register(input: RegisterRequest): Promise<LoginResponse> {
     data: {
       email: input.email,
       username: input.username,
-      passwordHash: hashPassword(input.password),
+      passwordHash: await hashPassword(input.password),
     },
   });
 
@@ -183,8 +203,17 @@ export async function login(
     where: { OR: [{ email: emailOrUsername }, { username: emailOrUsername }] },
   });
 
-  if (!user || !verifyPassword(password, user.passwordHash)) {
+  if (!user || !(await verifyPassword(password, user.passwordHash))) {
     throw new Error("Invalid credentials");
+  }
+
+  // Lazy migration: if the stored hash is the legacy sha256 form, upgrade it
+  // to argon2id on successful authentication (no extra user action needed).
+  if (LEGACY_SHA256_RE.test(user.passwordHash)) {
+    await db.user.update({
+      where: { id: user.id },
+      data: { passwordHash: await hashPassword(password) },
+    }).catch(() => undefined); // best-effort; don't fail the login if it errors
   }
 
   let token: string;
@@ -214,13 +243,13 @@ export async function changePassword(
   const user = await db.user.findUnique({ where: { id: userId } });
   if (!user) throw new Error("User not found");
 
-  if (!verifyPassword(currentPassword, user.passwordHash)) {
+  if (!(await verifyPassword(currentPassword, user.passwordHash))) {
     throw new Error("Current password is incorrect");
   }
 
   await db.user.update({
     where: { id: userId },
-    data: { passwordHash: hashPassword(newPassword) },
+    data: { passwordHash: await hashPassword(newPassword) },
   });
 
   return true;
