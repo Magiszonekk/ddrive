@@ -75,16 +75,14 @@ export async function getSystemUserId(): Promise<string> {
   if (cachedSystemUserId) return cachedSystemUserId;
 
   const { db } = await import("@ddv4/database");
-  let user = await db.user.findUnique({ where: { email: SYSTEM_USER_EMAIL } });
-
-  if (!user) {
-    user = await db.user.create({
-      data: {
-        email: SYSTEM_USER_EMAIL,
-        passwordHash: "",
-      },
-    });
-  }
+  // Upsert: concurrent first-time uploads can both miss the findUnique and
+  // race on create (unique email violation). upsert handles that, and also
+  // recovers if the cached id ever points at a deleted row.
+  const user = await db.user.upsert({
+    where: { email: SYSTEM_USER_EMAIL },
+    create: { email: SYSTEM_USER_EMAIL, passwordHash: "" },
+    update: {},
+  });
 
   cachedSystemUserId = user.id;
   return cachedSystemUserId;
