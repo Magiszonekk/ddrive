@@ -56,8 +56,8 @@ export function FolderBreadcrumb({ folderId, onMoveFile, onMoveFolder, anonSessi
     },
   });
 
-  const rootHref = anonSessionId ? "/drive" : "/";
-  const folderHref = (id: string) => anonSessionId ? `/drive?folder=${id}` : `/folder/${id}`;
+  const rootHref = anonSessionId ? "/drop" : "/";
+  const folderHref = (id: string) => anonSessionId ? `/drop?folder=${id}` : `/folder/${id}`;
 
   const canDrop = Boolean(onMoveFile || onMoveFolder);
 

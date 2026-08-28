@@ -7,6 +7,7 @@ import { ResetPassword } from "./pages/ResetPassword.js";
 import { Dashboard } from "./pages/Dashboard.js";
 import { SharedFile } from "./pages/SharedFile.js";
 import { AnonymousUpload } from "./pages/AnonymousUpload.js";
+import { Drop } from "./pages/Drop.js";
 import { AnonymousDrive } from "./pages/AnonymousDrive.js";
 import { Settings } from "./pages/Settings.js";
 import { HealthCheck } from "./pages/HealthCheck.js";
@@ -44,8 +45,9 @@ export function App() {
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/share/:shareId" element={<SharedFile />} />
-      <Route path="/upload" element={<AnonymousUpload />} />
-      <Route path="/drive" element={<AnonymousDrive />} />
+      <Route path="/drop" element={<Drop />} />
+      <Route path="/upload" element={<Navigate to="/drop" replace />} />
+      <Route path="/drive" element={<Navigate to="/drop" replace />} />
       <Route
         path="/*"
         element={

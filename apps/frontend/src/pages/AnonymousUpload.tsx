@@ -106,7 +106,7 @@ export function AnonymousUpload() {
                 <p className="mb-2 truncate text-sm font-medium text-ink">{r.fileName}</p>
                 <div className="flex gap-2">
                   <Link
-                    to="/drive"
+                    to="/drop"
                     className="inline-flex items-center justify-center rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-ink transition-colors duration-micro ease-out hover:bg-accent-2"
                   >
                     Open in my files
