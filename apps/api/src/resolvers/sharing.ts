@@ -60,6 +60,7 @@ export async function createAnonymousShare(
   expiresAt?: string | null,
   maxViews?: number | null,
   anonSessionId?: string | null,
+  label?: string | null,
 ): Promise<{ shareId: string; token: string }> {
   const file = await db.file.findFirst({
     where: { id: fileId, isAnonymous: true, deletedAt: null, status: "READY" },
@@ -80,6 +81,7 @@ export async function createAnonymousShare(
       maxViews: maxViews ?? null,
       anonSessionId: anonSessionId ?? null,
       anonToken: anonSessionId ? token : null,
+      label: label ?? null,
     },
   });
 
@@ -94,6 +96,7 @@ export async function createAnonymousFolderShare(
   expiresAt?: string | null,
   maxViews?: number | null,
   anonSessionId?: string | null,
+  label?: string | null,
 ): Promise<{ shareId: string; token: string }> {
   const folder = await db.folder.findFirst({
     where: { id: folderId, isAnonymous: true },
@@ -113,6 +116,7 @@ export async function createAnonymousFolderShare(
       maxViews: maxViews ?? null,
       anonSessionId: anonSessionId ?? null,
       anonToken: anonSessionId ? token : null,
+      label: label ?? null,
     },
   });
 

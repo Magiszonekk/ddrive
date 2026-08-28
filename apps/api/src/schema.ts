@@ -170,6 +170,7 @@ export function buildSchema() {
         viewCount: Int!
         createdAt: DateTime!
         token: String
+        label: String
       }
 
       type ShareCreateResult {
@@ -362,8 +363,8 @@ export function buildSchema() {
         ): ShareCreateResult!
 
         revokeShare(shareId: ID!): Boolean!
-        createAnonymousShare(fileId: ID!, allowContent: Boolean!, allowPreview: Boolean, expiresAt: String, maxViews: Int, anonSessionId: String): ShareCreateResult!
-        createAnonymousFolderShare(folderId: ID!, allowContent: Boolean!, allowPreview: Boolean, expiresAt: String, maxViews: Int, anonSessionId: String): ShareCreateResult!
+        createAnonymousShare(fileId: ID!, allowContent: Boolean!, allowPreview: Boolean, expiresAt: String, maxViews: Int, anonSessionId: String, label: String): ShareCreateResult!
+        createAnonymousFolderShare(folderId: ID!, allowContent: Boolean!, allowPreview: Boolean, expiresAt: String, maxViews: Int, anonSessionId: String, label: String): ShareCreateResult!
         revokeAnonymousShare(shareId: ID!, anonSessionId: String!): Boolean!
         reportShare(shareId: ID!, reason: String!, note: String): Boolean!
         claimShare(shareId: ID!, token: String!): Boolean!
@@ -713,13 +714,13 @@ export function buildSchema() {
           const auth = requireAuth(ctx);
           return sharingResolvers.revokeShare(auth.userId, args.shareId);
         },
-        createAnonymousShare: async (_parent: unknown, args: { fileId: string; allowContent: boolean; allowPreview?: boolean; expiresAt?: string | null; maxViews?: number | null; anonSessionId?: string | null }, ctx: Context) => {
+        createAnonymousShare: async (_parent: unknown, args: { fileId: string; allowContent: boolean; allowPreview?: boolean; expiresAt?: string | null; maxViews?: number | null; anonSessionId?: string | null; label?: string | null }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
-          return sharingResolvers.createAnonymousShare(args.fileId, args.allowContent, args.allowPreview ?? false, args.expiresAt ?? null, args.maxViews ?? null, args.anonSessionId ?? null);
+          return sharingResolvers.createAnonymousShare(args.fileId, args.allowContent, args.allowPreview ?? false, args.expiresAt ?? null, args.maxViews ?? null, args.anonSessionId ?? null, args.label ?? null);
         },
-        createAnonymousFolderShare: async (_parent: unknown, args: { folderId: string; allowContent: boolean; allowPreview?: boolean; expiresAt?: string | null; maxViews?: number | null; anonSessionId?: string | null }, ctx: Context) => {
+        createAnonymousFolderShare: async (_parent: unknown, args: { folderId: string; allowContent: boolean; allowPreview?: boolean; expiresAt?: string | null; maxViews?: number | null; anonSessionId?: string | null; label?: string | null }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
-          return sharingResolvers.createAnonymousFolderShare(args.folderId, args.allowContent, args.allowPreview ?? false, args.expiresAt ?? null, args.maxViews ?? null, args.anonSessionId ?? null);
+          return sharingResolvers.createAnonymousFolderShare(args.folderId, args.allowContent, args.allowPreview ?? false, args.expiresAt ?? null, args.maxViews ?? null, args.anonSessionId ?? null, args.label ?? null);
         },
         revokeAnonymousShare: async (_parent: unknown, args: { shareId: string; anonSessionId: string }, ctx: Context) => {
           enforceRateLimit(ctx.ip, "auth");
