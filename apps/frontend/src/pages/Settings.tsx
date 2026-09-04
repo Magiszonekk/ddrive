@@ -19,6 +19,12 @@ const CHANGE_PASSWORD_MUTATION = `
   }
 `;
 
+const REQUEST_ACCOUNT_DELETION_MUTATION = `
+  mutation RequestAccountDeletion($currentPassword: String!) {
+    requestAccountDeletion(currentPassword: $currentPassword)
+  }
+`;
+
 export function Settings() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
@@ -49,6 +55,39 @@ export function Settings() {
     setPwError("");
     setPwSuccess(false);
   }
+
+  const [showDeleteForm, setShowDeleteForm] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleteSent, setDeleteSent] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const deletePasswordRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (showDeleteForm) deletePasswordRef.current?.focus();
+  }, [showDeleteForm]);
+
+  function closeDeleteForm() {
+    setShowDeleteForm(false);
+    setDeletePassword("");
+    setDeleteError("");
+    setDeleteSent(false);
+  }
+
+  const handleRequestAccountDeletion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDeleteError("");
+    setDeleteLoading(true);
+    try {
+      await gqlRequest(REQUEST_ACCOUNT_DELETION_MUTATION, { currentPassword: deletePassword });
+      setDeletePassword("");
+      setDeleteSent(true);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to start account deletion");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
 
   const { data } = useQuery({
     queryKey: ["storageUsage"],
@@ -300,6 +339,89 @@ export function Settings() {
             Log out
           </button>
         </div>
+
+        {/* Danger zone — delete account */}
+        <section className="border-t border-error/30 pt-8">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="mb-1 text-lg font-semibold text-error">Delete account</h2>
+              <p className="text-sm text-muted">
+                Permanently deletes your account, files, folders, share links, sessions and API
+                keys. This can't be undone. We'll email you a confirmation link before anything
+                is deleted.
+              </p>
+            </div>
+            {!showDeleteForm && (
+              <button
+                type="button"
+                onClick={() => setShowDeleteForm(true)}
+                className="h-11 shrink-0 rounded-md border border-error px-4 text-sm font-medium text-error transition-colors duration-short ease-out hover:bg-error hover:text-error-ink"
+              >
+                Delete account
+              </button>
+            )}
+          </div>
+
+          <div
+            className="grid transition-[grid-template-rows] duration-long ease-in-out"
+            style={{ gridTemplateRows: showDeleteForm ? "1fr" : "0fr" }}
+          >
+            <div className="overflow-hidden" inert={!showDeleteForm}>
+              {deleteSent ? (
+                <div className="mt-4 space-y-3 rounded-md border border-error/40 bg-error/10 p-4">
+                  <p className="text-sm text-ink-2">
+                    We sent a confirmation link to <strong>{user?.email}</strong>. Click it to
+                    permanently delete your account. The link expires in 1 hour. Didn't ask for
+                    this? Just ignore the email — nothing happens unless you click it.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={closeDeleteForm}
+                    className="h-9 rounded-md border border-rule-2 px-4 text-sm font-medium text-ink-2 transition-colors duration-short ease-out hover:bg-paper-2 hover:text-ink"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleRequestAccountDeletion} className="mt-4 space-y-4">
+                  <p className="text-sm text-ink-2">
+                    Enter your password to confirm. We'll then email a one-time link — clicking
+                    it is the final, irreversible step.
+                  </p>
+                  <div>
+                    <label className={authLabelClass}>Current password</label>
+                    <input
+                      ref={deletePasswordRef}
+                      type="password"
+                      value={deletePassword}
+                      onChange={(e) => setDeletePassword(e.target.value)}
+                      required={showDeleteForm}
+                      autoComplete="current-password"
+                      className={authInputClass}
+                    />
+                  </div>
+                  {deleteError && <p className="text-sm text-error">{deleteError}</p>}
+                  <div className="flex gap-3">
+                    <button
+                      type="submit"
+                      disabled={deleteLoading}
+                      className="flex h-11 flex-1 items-center justify-center rounded-md bg-error px-4 text-sm font-medium text-error-ink transition-colors duration-short ease-out hover:brightness-110 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {deleteLoading ? "Sending…" : "Email me a confirmation link"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={closeDeleteForm}
+                      className="h-11 shrink-0 rounded-md border border-rule-2 px-4 text-sm font-medium text-ink-2 transition-colors duration-short ease-out hover:bg-paper-2 hover:text-ink"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

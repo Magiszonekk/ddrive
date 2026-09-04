@@ -7,6 +7,8 @@ import type { LoginResponse } from "@ddv4/types/api";
 const LOGIN_MUTATION = `
   mutation Login($emailOrUsername: String!, $password: String!) {
     login(emailOrUsername: $emailOrUsername, password: $password) {
+      requiresEmailVerification
+      email
       token
       user {
         id
@@ -37,6 +39,10 @@ export function Unlock() {
         password,
       });
 
+      if (!login.token || !login.user) {
+        setError("Unlock failed. Please try again.");
+        return;
+      }
       setAuth(login.token, login.user);
     } catch {
       setError("Wrong password");

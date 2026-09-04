@@ -112,6 +112,9 @@ export const serverConfig = {
   frontendPort: parseInt(process.env.FRONTEND_PORT ?? "5173", 10),
   apiUrl: process.env.API_URL ?? `http://localhost:${process.env.API_PORT ?? "3000"}`,
   frontendUrl: process.env.FRONTEND_URL ?? `http://localhost:${process.env.FRONTEND_PORT ?? "5173"}`,
+  // Public-facing origin used for canonical URLs, Open Graph, sitemap.xml.
+  // Falls back to FRONTEND_URL so dev keeps working without a separate var.
+  publicUrl: process.env.PUBLIC_URL?.trim() || process.env.FRONTEND_URL || `http://localhost:${process.env.FRONTEND_PORT ?? "5173"}`,
   apiKey: process.env.API_KEY ?? "",
   botConfigs: collectBotConfigs(),
   telegramBotConfigs: collectTelegramBotConfigs(),

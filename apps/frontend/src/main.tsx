@@ -5,6 +5,11 @@ import { BrowserRouter } from "react-router";
 import { App } from "./App.js";
 import "./index.css";
 
+// basename mirrors vite.config.ts `base`. The SPA is mounted at /app/* by
+// nginx (ddrive.cikowice.pl/app/), and React Router needs to know so that
+// <Link to="/drop"> resolves to /app/drop and not /drop.
+const BASENAME = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "") || "/";
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -17,7 +22,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={BASENAME === "/" ? undefined : BASENAME}>
         <App />
       </BrowserRouter>
     </QueryClientProvider>

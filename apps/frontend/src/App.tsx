@@ -4,6 +4,9 @@ import { Login } from "./pages/Login.js";
 import { Register } from "./pages/Register.js";
 import { ForgotPassword } from "./pages/ForgotPassword.js";
 import { ResetPassword } from "./pages/ResetPassword.js";
+import { CheckEmail } from "./pages/CheckEmail.js";
+import { VerifyEmail } from "./pages/VerifyEmail.js";
+import { ConfirmDeleteAccount } from "./pages/ConfirmDeleteAccount.js";
 import { Dashboard } from "./pages/Dashboard.js";
 import { SharedFile } from "./pages/SharedFile.js";
 import { AnonymousUpload } from "./pages/AnonymousUpload.js";
@@ -42,6 +45,9 @@ export function App() {
       <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/check-email" element={<CheckEmail />} />
+      <Route path="/verify-email" element={<VerifyEmail />} />
+      <Route path="/confirm-delete-account" element={<ConfirmDeleteAccount />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/share/:shareId" element={<SharedFile />} />

@@ -1,19 +1,15 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { gqlRequest } from "../lib/graphql.js";
-import { useAuthStore } from "../stores/auth.js";
+import { humanizeRegisterError } from "../lib/auth-errors.js";
 import { AuthCard, authInputClass, authLabelClass, authPrimaryButtonClass } from "../components/layout/AuthCard.js";
 import type { LoginResponse } from "@ddv4/types/api";
 
 const REGISTER_MUTATION = `
   mutation Register($email: String!, $username: String!, $password: String!) {
     register(email: $email, username: $username, password: $password) {
-      token
-      user {
-        id
-        email
-        username
-      }
+      requiresEmailVerification
+      email
     }
   }
 `;
@@ -26,19 +22,18 @@ export function Register() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const setAuth = useAuthStore((s) => s.setAuth);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
     if (password !== confirmPassword) {
-      setError("Passwords do not match");
+      setError("Passwords do not match.");
       return;
     }
 
     if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+      setError("Password must be at least 8 characters.");
       return;
     }
 
@@ -51,10 +46,13 @@ export function Register() {
         password,
       });
 
-      setAuth(register.token, register.user);
-      navigate("/");
+      // register always returns requiresEmailVerification: true for new
+      // accounts. We don't auto-login — we redirect the user to the
+      // "check your email" page where they can resend the link if needed.
+      const targetEmail = register.email ?? email;
+      navigate("/check-email", { state: { email: targetEmail } });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed");
+      setError(humanizeRegisterError(err));
     } finally {
       setLoading(false);
     }
@@ -113,13 +111,6 @@ export function Register() {
             required
             className={authInputClass}
           />
-        </div>
-        <div className="rounded-md border border-rule bg-paper-2 p-3 text-sm text-muted">
-          <p className="font-medium text-ink-2">No password recovery</p>
-          <p className="mt-1">
-            DiscordDrive is end-to-end encrypted — your password never leaves your device, so we
-            cannot reset it for you. If you forget it, your files become permanently inaccessible.
-          </p>
         </div>
         {error && <p className="text-sm text-error">{error}</p>}
         <button type="submit" disabled={loading} className={authPrimaryButtonClass}>

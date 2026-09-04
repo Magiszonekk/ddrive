@@ -14,6 +14,10 @@ model User {
   passwordHash String
   passwordResetToken   String?   @unique
   passwordResetExpires DateTime?
+  // Email verification — accounts created after this migration are created
+  // with emailVerified=false and can only sign in after clicking the link
+  // sent to their inbox. See apps/api/src/resolvers/auth.ts verifyEmail.
+  emailVerified        Boolean   @default(false)
   createdAt    DateTime        @default(now())
   files        File[]
   folders      Folder[]
@@ -21,6 +25,39 @@ model User {
   shares       Share[]
   sessions     DeviceSession[]
   apiKeys      ApiKey[]
+  verifications EmailVerification[]
+  accountDeletions AccountDeletion[]
+}
+
+model EmailVerification {
+  id        String   @id @default(cuid())
+  userId    String
+  // sha256(token) — the raw token is only ever sent via email and is never
+  // stored. This matches how passwordResetToken is handled.
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AccountDeletion {
+  id        String   @id @default(cuid())
+  userId    String
+  // sha256(token) — same pattern as EmailVerification/passwordResetToken.
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model DeviceSession {

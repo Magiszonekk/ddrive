@@ -6,14 +6,21 @@ export interface RegisterRequest {
   password: string;
 }
 
+export interface RegisterResponse {
+  requiresEmailVerification: true;
+  email: string;
+}
+
 export interface LoginResponse {
-  token: string;
-  user: {
+  requiresEmailVerification: boolean;
+  email?: string | null;
+  token?: string | null;
+  refreshToken?: string | null;
+  user?: {
     id: string;
     email: string;
     username: string | null;
-  };
-  refreshToken?: string;
+  } | null;
 }
 
 export interface InitUploadRequest {

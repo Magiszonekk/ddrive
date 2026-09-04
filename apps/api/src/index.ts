@@ -6,6 +6,11 @@ import { buildSchema, createContext } from "./schema.js";
 import { handleBlobContent, handleBlobContentForShare, handleBlobMetadata, handleBlobUpload, handleAnonymousBlobUpload } from "./handlers/blob.js";
 import { handleStreamRequest } from "./handlers/stream.js";
 import { handleSharePage, handleSharePageMedia, handleSharePagePoster, handleSharePageDownload } from "./handlers/share-page.js";
+import { handleLanding } from "./handlers/landing.js";
+import { handleDropPage } from "./handlers/drop.js";
+import { handleLoginPage } from "./handlers/login.js";
+import { handleRobots, handleSitemap, handleOgImage } from "./handlers/seo.js";
+import { isFaviconPath, handleFavicon } from "./handlers/favicon.js";
 import { checkRateLimit } from "./middleware/rate-limit.js";
 import { serverConfig } from "@ddv4/config/server";
 import { pluginRegistry } from "./plugin-registry.js";
@@ -119,6 +124,33 @@ async function handleRequest(req: Request): Promise<Response> {
     return handleSharePageDownload(req, params as { shareId: string });
   }
 
+  // SEO endpoints — public, no auth. Order matters: exact matches before
+  // the SPA's "/" would otherwise try to serve index.html, but this server
+  // doesn't serve the SPA — it only knows about API routes, so / and /drop
+  // fall through to the SSR handlers below. nginx fronts the SPA from
+  // apps/frontend/dist at /app/... in production.
+  if (method === "GET" && pathname === "/robots.txt") {
+    return handleRobots(req);
+  }
+  if (method === "GET" && pathname === "/sitemap.xml") {
+    return handleSitemap(req);
+  }
+  if (method === "GET" && pathname === "/og-image.png") {
+    return handleOgImage(req);
+  }
+  if (method === "GET" && isFaviconPath(pathname)) {
+    return handleFavicon(pathname);
+  }
+  if (method === "GET" && pathname === "/drop") {
+    return handleDropPage(req);
+  }
+  if (method === "GET" && pathname === "/login") {
+    return handleLoginPage(req);
+  }
+  if (method === "GET" && pathname === "/") {
+    return handleLanding(req);
+  }
+
   // Plugin routes: /api/plugin/:pluginName/...
   if (pathname.startsWith("/api/plugin/")) {
     const result = pluginRegistry.dispatch(req, pathname);
@@ -183,9 +215,11 @@ const anonTtlSweep = () =>
 anonTtlSweep();
 setInterval(anonTtlSweep, 60 * 60 * 1000).unref();
 
-// Create Magiszonek user if needed (fire-and-forget)
-import { createMagiszonekIfNeeded } from "@ddv4/database/seed/magiszonek";
-createMagiszonekIfNeeded().catch(console.error);
+// Dev-only seed for a demo "Magiszonek" account has been retired — it
+// auto-recreated the user on every restart with a random throwaway email
+// and a legacy sha256 (non-argon2) password, which fights real account
+// deletion. See packages/database/src/seed/magiszonek.ts if this is ever
+// needed again for local dev.
 
 // Replication worker: drains PENDING/MISSING placements onto replica pools.
 // No-op unless STORAGE_REPLICA_PROVIDERS names a provider with configured senders.

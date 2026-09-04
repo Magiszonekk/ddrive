@@ -13,15 +13,7 @@ import { resolveShareForPage } from "../resolvers/sharing.js";
 import { readBlobBytes } from "./blob.js";
 import { decryptServerSide } from "../storage/server-crypto.js";
 import { serverConfig } from "@ddv4/config/server";
-
-function escapeHtml(input: string): string {
-  return input
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+import { escapeHtml, faviconTags } from "./seo-helpers.js";
 
 function isImage(mimeType: string) { return mimeType.startsWith("image/"); }
 function isVideo(mimeType: string) { return mimeType.startsWith("video/"); }
@@ -56,16 +48,24 @@ export async function handleSharePage(req: Request, params: { shareId: string })
   if (share.shareType === "FOLDER") {
     const name = "Shared folder";
     const pageUrl = `${origin}/s/${share.shareId}?t=${encodeURIComponent(token)}`;
+    // Use the public OG image as the folder's preview so unfurls aren't blank.
+    const ogImage = `${origin}/og-image.png`;
     const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(name)} — ddrive</title>
+<meta name="robots" content="noindex,nofollow" />
+${faviconTags(origin)}
 <meta property="og:title" content="${escapeHtml(name)}" />
+<meta property="og:description" content="A folder shared via ddrive" />
 <meta property="og:site_name" content="ddrive" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="${escapeHtml(pageUrl)}" />
+<meta property="og:image" content="${escapeHtml(ogImage)}" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="${escapeHtml(ogImage)}" />
 <style>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 24px 16px; background: #0b0d10; color: #e8eaed; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; }
@@ -100,6 +100,7 @@ export async function handleSharePage(req: Request, params: { shareId: string })
   const downloadUrl = `${origin}/s/${share.shareId}/download?t=${encodeURIComponent(token)}`;
 
   const ogTags: string[] = [
+    `<meta name="robots" content="noindex,nofollow" />`,
     `<meta property="og:title" content="${escapeHtml(name)}" />`,
     `<meta property="og:site_name" content="ddrive" />`,
     `<meta property="og:url" content="${escapeHtml(pageUrl)}" />`,
@@ -111,12 +112,14 @@ export async function handleSharePage(req: Request, params: { shareId: string })
   if (share.allowPreview && isImage(mimeType)) {
     ogTags.push(`<meta property="og:type" content="website" />`);
     ogTags.push(`<meta property="og:image" content="${escapeHtml(mediaUrl)}" />`);
+    ogTags.push(`<meta property="og:description" content="Image shared via ddrive" />`);
     ogTags.push(`<meta name="twitter:image" content="${escapeHtml(mediaUrl)}" />`);
     bodyHtml = `<img src="${escapeHtml(mediaUrl)}" alt="${escapeHtml(name)}" class="preview" />`;
   } else if (share.allowPreview && isVideo(mimeType)) {
     ogTags.push(`<meta property="og:type" content="video.other" />`);
     ogTags.push(`<meta property="og:video" content="${escapeHtml(mediaUrl)}" />`);
     ogTags.push(`<meta property="og:video:type" content="${escapeHtml(mimeType)}" />`);
+    ogTags.push(`<meta property="og:description" content="Video shared via ddrive" />`);
     if (file.thumbnailBlobId) {
       const posterUrl = `${origin}/s/${share.shareId}/poster?t=${encodeURIComponent(token)}`;
       ogTags.push(`<meta property="og:image" content="${escapeHtml(posterUrl)}" />`);
@@ -124,6 +127,7 @@ export async function handleSharePage(req: Request, params: { shareId: string })
     bodyHtml = `<video src="${escapeHtml(mediaUrl)}" controls autoplay class="preview"></video>`;
   } else if (share.allowPreview && isAudio(mimeType)) {
     ogTags.push(`<meta property="og:type" content="music.song" />`);
+    ogTags.push(`<meta property="og:description" content="Audio shared via ddrive" />`);
     bodyHtml = `<audio src="${escapeHtml(mediaUrl)}" controls class="preview-audio"></audio>`;
   } else {
     ogTags.push(`<meta property="og:type" content="website" />`);
@@ -151,6 +155,7 @@ export async function handleSharePage(req: Request, params: { shareId: string })
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(name)} — ddrive</title>
 ${ogTags.join("\n")}
+${faviconTags(origin)}
 <style>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 24px 16px; background: #0b0d10; color: #e8eaed; display: flex; flex-direction: column; align-items: center; min-height: 100vh; box-sizing: border-box; }
@@ -325,6 +330,8 @@ export async function handleSharePageDownload(req: Request, params: { shareId: s
 
 function renderErrorPage(message: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>ddrive</title>
+<meta name="robots" content="noindex,nofollow" />
+${faviconTags(serverConfig.publicUrl.replace(/\/+$/, ""))}
 <style>body{font-family:-apple-system,sans-serif;background:#0b0d10;color:#e8eaed;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px;}</style>
 </head><body><p>${escapeHtml(message)}</p></body></html>`;
 }

@@ -2,7 +2,7 @@
 // Explains how the service works, the 30-day TTL, no-account model, and
 // privacy/disclaimer. Triggered by the "i" button.
 
-import { X, Clock, ShieldCheck, UserX, Server } from "lucide-react";
+import { X, Clock, ShieldCheck, UserX } from "lucide-react";
 
 interface InfoModalProps {
   onClose: () => void;
@@ -52,16 +52,6 @@ export function InfoModal({ onClose }: InfoModalProps) {
               <p>
                 Every anonymous file is permanently deleted after {TTL_DAYS} days. We don&rsquo;t
                 keep backups of expired files, so download anything important in time.
-              </p>
-            </div>
-          </li>
-          <li className="flex gap-3">
-            <Server size={18} className="mt-0.5 shrink-0 text-accent" />
-            <div>
-              <p className="font-medium text-ink">Stored on Discord</p>
-              <p>
-                Files are chunked and stored using Discord as the storage backend. This keeps the
-                service simple and free to use.
               </p>
             </div>
           </li>

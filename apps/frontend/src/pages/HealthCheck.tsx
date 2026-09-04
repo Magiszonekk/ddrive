@@ -270,7 +270,7 @@ export function HealthCheck() {
             </div>
             <span className="text-xs text-muted">
               {mode === "exists"
-                ? "Sprawdza czy chunki istnieją na Discordzie (szybkie)"
+                ? "Sprawdza czy chunki istnieją w magazynie (szybkie)"
                 : "Pobiera i weryfikuje SHA-256 każdego chunka (wolne, dokładne)"}
             </span>
           </div>

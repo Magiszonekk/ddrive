@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { gqlRequest } from "../lib/graphql.js";
+import { humanizeLoginError } from "../lib/auth-errors.js";
 import { useAuthStore } from "../stores/auth.js";
 import { AuthCard, authInputClass, authLabelClass, authPrimaryButtonClass, authSecondaryButtonClass } from "../components/layout/AuthCard.js";
 import type { LoginResponse } from "@ddv4/types/api";
@@ -8,6 +9,8 @@ import type { LoginResponse } from "@ddv4/types/api";
 const LOGIN_MUTATION = `
   mutation Login($emailOrUsername: String!, $password: String!) {
     login(emailOrUsername: $emailOrUsername, password: $password) {
+      requiresEmailVerification
+      email
       token
       user {
         id
@@ -37,10 +40,18 @@ export function Login() {
         password: password.trim(),
       });
 
+      if (login.requiresEmailVerification) {
+        setError("Please confirm your email first — check your inbox for the verification link.");
+        return;
+      }
+      if (!login.token || !login.user) {
+        setError("Sign in failed. Please try again.");
+        return;
+      }
       setAuth(login.token, login.user);
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(humanizeLoginError(err));
     } finally {
       setLoading(false);
     }

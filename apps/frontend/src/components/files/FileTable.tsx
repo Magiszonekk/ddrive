@@ -256,7 +256,9 @@ export function FileTable({
                   )}
                 </div>
               ))}
-              {paginated.map((file) => (
+              {paginated.map((file) => {
+                const ttl = ttlLabel(file.expiresAt);
+                return (
                 <div
                   key={`file-grid-${file.id}`}
                   draggable
@@ -275,8 +277,17 @@ export function FileTable({
                     style={{ cursor: file.status === "READY" && ["image/", "video/", "audio/"].some((p) => file.mimeType.startsWith(p)) ? "pointer" : undefined }}
                   >
                     <Thumbnail fileId={file.id} thumbnailBlobId={file.thumbnailBlobId} mimeType={file.mimeType} anonSessionId={anonSessionId} />
+                    {ttl && (
+                      <div
+                        title={file.expiresAt ? `Expires ${formatDateFull(file.expiresAt)}` : undefined}
+                        className="absolute left-1.5 top-1.5 z-20 inline-flex items-center gap-1 rounded-md bg-paper/85 px-1.5 py-1 text-[11px] font-medium text-warning shadow-[0_1px_2px_oklch(0%_0_0/0.25)] backdrop-blur-sm"
+                      >
+                        <Clock size={11} />
+                        <span className="font-mono tabular-nums">{ttl}</span>
+                      </div>
+                    )}
                     <div className="absolute right-1.5 top-1.5 z-20 opacity-0 transition-opacity duration-short ease-out group-hover:opacity-100">
-                      <FileActionMenu fileName={file.name} onDownload={() => onDownload(file)} onPlay={onPlay && file.status === "READY" && file.mimeType.startsWith("video/") ? () => onPlay(file) : undefined} onShare={onShare && file.status === "READY" ? () => onShare(file) : undefined} onDelete={onDelete ? () => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); } : undefined} />
+                      <FileActionMenu fileName={file.name} onDownload={() => onDownload(file)} onPlay={onPlay && file.status === "READY" && file.mimeType.startsWith("video/") ? () => onPlay(file) : undefined} onShare={onShare && file.status === "READY" ? () => onShare(file) : undefined} onDelete={onDelete ? () => { if (confirm(`Delete "${file.name}"?`)) onDelete(file); } : undefined} onExtendTtl={onExtendTtl && file.expiresAt ? () => onExtendTtl(file) : undefined} />
                     </div>
                   </div>
                   <div className="p-2.5">
@@ -284,7 +295,8 @@ export function FileTable({
                     <p className="mt-0.5 font-mono text-[11px] tabular-nums text-muted">{formatSize(file.size)}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

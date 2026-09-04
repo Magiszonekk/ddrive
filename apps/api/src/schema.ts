@@ -63,9 +63,14 @@ export function buildSchema() {
       }
 
       type AuthResponse {
-        token: String!
+        # When requiresEmailVerification is true, the caller just signed up
+        # and must click the link in the verification email before they can
+        # sign in. In that case token/refreshToken/user are null.
+        requiresEmailVerification: Boolean!
+        email: String
+        token: String
         refreshToken: String
-        user: User!
+        user: User
       }
 
       type DeviceSession {
@@ -289,6 +294,9 @@ export function buildSchema() {
 
         login(emailOrUsername: String!, password: String!, deviceName: String): AuthResponse!
 
+        verifyEmail(token: String!): AuthResponse!
+        resendVerification(email: String!): Boolean!
+
         refreshSession(refreshToken: String!): RefreshSessionResult!
         revokeSession(sessionId: ID!): Boolean!
 
@@ -306,6 +314,9 @@ export function buildSchema() {
 
         requestPasswordReset(email: String!): Boolean!
         resetPassword(token: String!, newPassword: String!): Boolean!
+
+        requestAccountDeletion(currentPassword: String!): Boolean!
+        confirmAccountDeletion(token: String!): Boolean!
 
         initUpload(
           parentFolderId: ID
@@ -530,6 +541,16 @@ export function buildSchema() {
           enforceRateLimit(ctx.ip, "auth");
           return authResolvers.register(args);
         },
+        verifyEmail: async (_parent: unknown, args: { token: string }, ctx: Context) => {
+          requireFullMode();
+          enforceRateLimit(ctx.ip, "auth");
+          return authResolvers.verifyEmail(args.token);
+        },
+        resendVerification: async (_parent: unknown, args: { email: string }, ctx: Context) => {
+          requireFullMode();
+          enforceRateLimit(ctx.ip, "auth");
+          return authResolvers.resendVerification(args.email);
+        },
         login: async (_parent: unknown, args: { emailOrUsername: string; password: string; deviceName?: string }, ctx: Context) => {
           requireFullMode();
           enforceRateLimit(ctx.ip, "auth");
@@ -584,6 +605,24 @@ export function buildSchema() {
         ) => {
           requireFullMode();
           return authResolvers.resetPassword(args.token, args.newPassword);
+        },
+        requestAccountDeletion: async (
+          _parent: unknown,
+          args: { currentPassword: string },
+          ctx: Context,
+        ) => {
+          requireFullMode();
+          enforceRateLimit(ctx.ip, "auth");
+          const auth = requireInteractive(ctx);
+          return authResolvers.requestAccountDeletion(auth.userId, args.currentPassword);
+        },
+        confirmAccountDeletion: async (
+          _parent: unknown,
+          args: { token: string },
+          _ctx: Context,
+        ) => {
+          requireFullMode();
+          return authResolvers.confirmAccountDeletion(args.token);
         },
         initUpload: async (_parent: unknown, args: {
           parentFolderId?: string;

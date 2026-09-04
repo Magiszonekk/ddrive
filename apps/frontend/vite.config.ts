@@ -14,6 +14,7 @@ const frontendPort = parseInt(process.env.FRONTEND_PORT ?? "5173", 10);
 // and docs/hermes/concept.md section 4.2), so the SW build plugin is gone.
 
 export default defineConfig({
+  base: "/app/",
   plugins: [react(), tailwindcss()],
   server: {
     host: "0.0.0.0",
