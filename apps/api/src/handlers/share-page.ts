@@ -14,6 +14,7 @@ import { readBlobBytes } from "./blob.js";
 import { decryptServerSide, plaintextSizeFor } from "../storage/server-crypto.js";
 import { serverConfig } from "@ddv4/config/server";
 import { escapeHtml, faviconTags } from "./seo-helpers.js";
+import { DiscordUnavailableError } from "@ddv4/discord-client";
 
 function isImage(mimeType: string) { return mimeType.startsWith("image/"); }
 function isVideo(mimeType: string) { return mimeType.startsWith("video/"); }
@@ -322,6 +323,22 @@ function streamShareRange(chunks: ShareChunk[], start: number, end: number): Rea
   });
 }
 
+
+/**
+ * Storage-provider outage (e.g. Cloudflare blocking this host's IP on the
+ * Discord API) is a 503, not a 500 and definitely not a hang. Returning
+ * Retry-After lets clients back off instead of hammering a blocked edge.
+ */
+function providerUnavailableResponse(error: unknown): Response | null {
+  if (!(error instanceof DiscordUnavailableError)) return null;
+  const seconds = Math.max(1, Math.round(error.retryAfterMs / 1000));
+  return new Response(
+    "Storage backend is temporarily unavailable. Please try again in about " +
+      `${Math.ceil(seconds / 60)} minute(s).`,
+    { status: 503, headers: { "Retry-After": String(seconds), "Content-Type": "text/plain; charset=utf-8" } },
+  );
+}
+
 /** Shared body builder for /media and /download: Range-aware, streamed. */
 function buildShareFileResponse(
   chunks: ShareChunk[],
@@ -357,6 +374,20 @@ function buildShareFileResponse(
   return new Response(streamShareRange(chunks, start, end), { status, headers });
 }
 
+/**
+ * Reads the FIRST chunk of the requested range before the response is
+ * constructed, so a provider outage becomes a clean 503 instead of a
+ * 200 whose body dies mid-stream (which the browser shows as a truncated or
+ * failed download with no explanation). Later chunks can still fail mid-body —
+ * unavoidable once headers are sent — but the common case, the backend being
+ * down for the whole request, is caught here.
+ */
+async function assertFirstChunkReadable(chunks: ShareChunk[], start: number): Promise<void> {
+  let i = chunks.findIndex((c) => c.offset + c.plaintextSizeBytes > start);
+  if (i < 0) return;
+  await readBlobBytes(chunks[i]!.row as never);
+}
+
 /** GET /s/:shareId/media — inline embed source (image/video/audio, no download disposition). */
 export async function handleSharePageMedia(req: Request, params: { shareId: string }): Promise<Response> {
   const url = new URL(req.url);
@@ -366,12 +397,13 @@ export async function handleSharePageMedia(req: Request, params: { shareId: stri
 
   try {
     const chunks = await getShareChunks(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
+    await assertFirstChunkReadable(chunks, 0);
     return buildShareFileResponse(chunks, req.headers.get("range"), {
       "Content-Type": share.file.mimeType ?? "application/octet-stream",
       "Cache-Control": "private, max-age=300",
     });
-  } catch {
-    return new Response("Failed to load media", { status: 500 });
+  } catch (error) {
+    return providerUnavailableResponse(error) ?? new Response("Failed to load media", { status: 500 });
   }
 }
 
@@ -391,8 +423,8 @@ export async function handleSharePagePoster(req: Request, params: { shareId: str
     return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
       headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=300" },
     });
-  } catch {
-    return new Response("Failed to load poster", { status: 500 });
+  } catch (error) {
+    return providerUnavailableResponse(error) ?? new Response("Failed to load poster", { status: 500 });
   }
 }
 
@@ -406,12 +438,13 @@ export async function handleSharePageDownload(req: Request, params: { shareId: s
   try {
     const chunks = await getShareChunks(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
     const fileName = share.file.name ?? "download";
+    await assertFirstChunkReadable(chunks, 0);
     return buildShareFileResponse(chunks, req.headers.get("range"), {
       "Content-Type": share.file.mimeType ?? "application/octet-stream",
       "Content-Disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
-  } catch {
-    return new Response("Failed to load file", { status: 500 });
+  } catch (error) {
+    return providerUnavailableResponse(error) ?? new Response("Failed to load file", { status: 500 });
   }
 }
 

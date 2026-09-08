@@ -9,7 +9,7 @@ export { WebhookRateLimiter } from "./rate-limiter.js";
 
 export { uploadChunk, type UploadResult } from "./uploader.js";
 
-export { getChunkUrl, streamChunk, downloadChunk } from "./downloader.js";
+export { getChunkUrl, streamChunk, downloadChunk, DiscordUnavailableError } from "./downloader.js";
 
 export { deleteChunk } from "./deleter.js";
 

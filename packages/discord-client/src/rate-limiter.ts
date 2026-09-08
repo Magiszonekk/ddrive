@@ -14,6 +14,8 @@ export class WebhookRateLimiter {
   private webhooks = new Map<string, WebhookState>();
   private errorTimestamps: number[] = []; // Sliding window for Cloudflare protection
   private roundRobinIndex = 0;
+  /** Unix ms until which Cloudflare is blocking this host's IP (0 = not blocked). */
+  private cloudflareBlockedUntil = 0;
 
   recordResponse(webhookId: string, headers: Headers): void {
     const remaining = headers.get("x-ratelimit-remaining");
@@ -44,6 +46,40 @@ export class WebhookRateLimiter {
     if (statusCode === 401 || statusCode === 403 || statusCode === 429) {
       this.errorTimestamps.push(Date.now());
     }
+  }
+
+  /**
+   * Remember that a sender is throttled until a point in time, and whether the
+   * throttle came from Cloudflare (IP-level, applies to EVERY webhook) rather
+   * than Discord (per-route).
+   *
+   * Without this the limiter counted 429s but never acted on them: every
+   * subsequent read still dialled Discord, ate another 429, and slept again.
+   */
+  recordThrottle(webhookId: string, retryAfterMs: number, cloudflareBlocked: boolean): void {
+    const until = Date.now() + retryAfterMs;
+    if (cloudflareBlocked) {
+      // IP-level: no webhook on this host will work until it lifts.
+      this.cloudflareBlockedUntil = Math.max(this.cloudflareBlockedUntil, until);
+      return;
+    }
+    const state = this.webhooks.get(webhookId) ?? {
+      remaining: config.webhookRateLimitDefault,
+      resetAt: 0,
+      bucketHash: "",
+      inFlight: 0,
+    };
+    state.remaining = 0;
+    state.resetAt = Math.max(state.resetAt, until);
+    this.webhooks.set(webhookId, state);
+  }
+
+  /**
+   * Milliseconds until the Cloudflare IP block lifts, or 0 when not blocked.
+   * Callers should surface this instead of attempting a read that cannot work.
+   */
+  cloudflareBlockRemainingMs(): number {
+    return Math.max(0, this.cloudflareBlockedUntil - Date.now());
   }
 
   canUse(webhookId: string): boolean {

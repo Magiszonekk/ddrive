@@ -5,6 +5,51 @@ import type { WebhookRateLimiter } from "./rate-limiter.js";
 
 const MAX_RETRIES = 3;
 
+/**
+ * Upper bound on how long we will sleep for a single 429 before giving up.
+ *
+ * Discord's own per-route limits report `retry-after` in seconds and are
+ * small. A Cloudflare IP-level block on /api/v10/webhooks/ instead reports
+ * `retry-after` in the THOUSANDS (2402 = 40 minutes observed on prod), and the
+ * old code slept for exactly that, up to MAX_RETRIES times — roughly two hours
+ * inside one request. The share download handler therefore never emitted
+ * response headers and the browser hung forever with no error.
+ */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/** Thrown when the retry-after is so long that waiting is pointless. */
+export class DiscordUnavailableError extends Error {
+  readonly retryAfterMs: number;
+  readonly cloudflareBlocked: boolean;
+  constructor(message: string, retryAfterMs: number, cloudflareBlocked: boolean) {
+    super(message);
+    this.name = "DiscordUnavailableError";
+    this.retryAfterMs = retryAfterMs;
+    this.cloudflareBlocked = cloudflareBlocked;
+  }
+}
+
+/**
+ * A Cloudflare edge block is distinguishable from a real Discord rate limit:
+ * Discord always returns JSON plus x-ratelimit-* headers, Cloudflare returns
+ * an HTML "Access denied" page with neither. Verified on prod: HTML body,
+ * `server: cloudflare`, `x-ratelimit-remaining: null`, retry-after 2011s.
+ */
+function isCloudflareBlock(response: Response): boolean {
+  const contentType = response.headers.get("content-type") ?? "";
+  return (
+    contentType.includes("text/html") &&
+    response.headers.get("x-ratelimit-remaining") === null
+  );
+}
+
+function retryAfterMsFrom(response: Response): number {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return 5_000;
+  const seconds = parseFloat(raw);
+  return Number.isFinite(seconds) ? seconds * 1000 : 5_000;
+}
+
 interface DiscordAttachment {
   url: string;
   size: number;
@@ -26,6 +71,17 @@ export async function getChunkUrl(
   rateLimiter: WebhookRateLimiter,
 ): Promise<string> {
   const url = `${getWebhookApiUrl(webhook)}/messages/${messageId}`;
+
+  // Don't dial an IP that Cloudflare is actively blocking: every attempt would
+  // 429 anyway and each one refreshes the block's window, prolonging it.
+  const blockedFor = rateLimiter.cloudflareBlockRemainingMs();
+  if (blockedFor > 0) {
+    throw new DiscordUnavailableError(
+      `Discord API is blocking this server's IP (Cloudflare); retry in ~${Math.round(blockedFor / 1000)}s`,
+      blockedFor,
+      true,
+    );
+  }
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     let response: Response;
@@ -52,8 +108,23 @@ export async function getChunkUrl(
 
     if (response.status === 429) {
       rateLimiter.recordError(429);
-      const retryAfter = response.headers.get("retry-after");
-      const waitMs = retryAfter ? parseFloat(retryAfter) * 1000 : 5000;
+      const cfBlocked = isCloudflareBlock(response);
+      const waitMs = retryAfterMsFrom(response);
+      rateLimiter.recordThrottle(webhook.id, waitMs, cfBlocked);
+
+      // Fail fast instead of sleeping out the clock inside the request. A
+      // Cloudflare block lasts tens of minutes; sleeping through it turns a
+      // recoverable error into a hung connection with no response headers.
+      if (cfBlocked || waitMs > MAX_RETRY_AFTER_MS) {
+        throw new DiscordUnavailableError(
+          cfBlocked
+            ? `Discord API is blocking this server's IP (Cloudflare); retry in ~${Math.round(waitMs / 1000)}s`
+            : `Discord rate limit too long to wait out (${Math.round(waitMs / 1000)}s)`,
+          waitMs,
+          cfBlocked,
+        );
+      }
+
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       continue;
     }
