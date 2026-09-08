@@ -191,10 +191,29 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
     });
 
     const realFileId = initUpload.fileId;
-    store.removeUpload(placeholderId);
+    // KeepController: plain removeUpload() would unregister the AbortController
+    // too, and a cancel click landing between here and registerController()
+    // below would silently no-op (see stores/upload.ts).
+    store.removeUploadKeepController(placeholderId);
     activeUploadId = realFileId;
     store.addUpload(realFileId, totalBlobs, file.size, file.name);
     store.registerController(realFileId, controller);
+
+    // The user may have hit X while initUpload was in flight; the placeholder
+    // row is gone by now, so surface it on the real id instead of starting to
+    // push chunks for an upload nobody wants.
+    if (controller.signal.aborted) {
+      store.updateUpload(realFileId, { status: UploadStatus.CANCELLED });
+      logUploadEvent({
+        type: "upload_session_cancelled",
+        uploadId,
+        fileId: realFileId,
+        stage: "init_upload",
+        elapsedMs: Number((performance.now() - sessionStartMs).toFixed(2)),
+      });
+      throw new DOMException("Upload aborted", "AbortError");
+    }
+
     store.updateUpload(realFileId, { status: UploadStatus.UPLOADING });
 
     // Chunks safely on storage, keyed by index and carried across resume
@@ -210,7 +229,17 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
     let uploadedBytes = 0;
     let uploadedBlobs = 0;
 
-    const CONCURRENCY = config.defaultUploadConcurrency;
+    // Derived from a memory budget, not a fixed number: live memory is
+    // concurrency * chunkSize * copies-per-chunk (2 here — the Uint8Array from
+    // the chunker plus fetch's internal body copy). Floor of 2 keeps a tiny
+    // budget from serialising the upload entirely.
+    const CONCURRENCY = Math.max(
+      2,
+      Math.min(
+        config.defaultUploadConcurrency,
+        Math.floor(config.uploadInFlightBudgetBytes / (LEGACY_UPLOAD_CHUNK_SIZE_BYTES * 2)),
+      ),
+    );
     uploadStartMs = performance.now();
 
     const uploadChunk = async (chunk: { index: number; data: Uint8Array }) => {
@@ -218,7 +247,8 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
       if (doneChunks.has(chunk.index)) return;
 
       const chunkStartMs = performance.now();
-      const chunkBuffer = chunk.data.buffer.slice(chunk.data.byteOffset, chunk.data.byteOffset + chunk.data.byteLength) as ArrayBuffer;
+      // No .buffer.slice() copy here: fetch copies the body internally anyway,
+      // so duplicating an 8 MiB chunk per worker was pure memory overhead.
       const blobId = `${realFileId}:chunk:${chunk.index}`;
 
       // Already on storage from an earlier attempt: no need to re-send bytes.
@@ -229,8 +259,9 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
       if (!alreadyStored) {
         const requestStartMs = performance.now();
         const uploadResult = await withChunkRetry(
-          () => uploadBlobToApi(blobId, chunkBuffer, {
+          () => uploadBlobToApi(blobId, chunk.data, {
             authToken,
+            signal: controller.signal,
             extraHeaders: {
               "X-Upload-Id": uploadId,
               "X-Chunk-Index": String(chunk.index),
@@ -377,7 +408,7 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
           totalBytes: String(file.size),
           chunkCount: chunkCount,
           blobs: uploadedBlobRecords,
-        }, authToken),
+        }, authToken, controller.signal),
         controller.signal,
       );
       commitSucceeded = commitManifest.success;
@@ -438,8 +469,26 @@ export async function uploadFile(file: File, folderId: string | null): Promise<s
     store.updateUpload(realFileId, { status: UploadStatus.DONE });
     return realFileId;
   } catch (error) {
+    const cancelled =
+      controller.signal.aborted ||
+      (error instanceof DOMException && error.name === "AbortError");
+
     if (!controller.signal.aborted) controller.abort();
-    store.updateUpload(activeUploadId, { status: UploadStatus.FAILED });
+
+    // A deliberate cancel is not a failure: reporting it as FAILED made the UI
+    // show a red error for something the user asked for, and polluted the
+    // upload_session_failed telemetry stream with non-incidents.
+    store.updateUpload(activeUploadId, {
+      status: cancelled ? UploadStatus.CANCELLED : UploadStatus.FAILED,
+    });
+    logUploadEvent({
+      type: cancelled ? "upload_session_cancelled" : "upload_session_failed",
+      uploadId,
+      fileId: activeUploadId,
+      stage: "chunk_pass",
+      elapsedMs: Number((performance.now() - (uploadStartMs ?? sessionStartMs)).toFixed(2)),
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }

@@ -25,7 +25,16 @@ export const config = {
   saltLength: 16, // 128-bit salt
 
   // Upload concurrency
+  // Hard ceiling; the effective worker count is derived from the memory budget
+  // below, because live memory scales with concurrency * chunkSize * copies —
+  // concurrency alone is not a safe knob on multi-GB uploads.
   defaultUploadConcurrency: 20,
+
+  // Max bytes of chunk data allowed in flight at once in the browser.
+  // 192 MiB / (8 MiB chunk * 2 copies) = 12 workers, which still covers the
+  // 8-webhook Discord pool (dropping below 8 would throttle fan-out and cost
+  // real upload throughput). Measured peak: ~677 MiB vs ~1029 MiB at conc=20.
+  uploadInFlightBudgetBytes: 192 * 1024 * 1024,
 
   // Discord rate limiting
   webhookRateLimitDefault: 120, // req/min starting point

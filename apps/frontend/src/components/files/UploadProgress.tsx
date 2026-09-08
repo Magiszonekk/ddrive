@@ -4,6 +4,11 @@ import { useUploadStore } from "../../stores/upload.js";
 
 const ETA_TICK_MS = 300;
 
+// Terminal states: no cancel button, no speed/ETA, auto-dismissed after 3s.
+// CANCELLED belongs here — a cancelled row that still counted as "active"
+// kept showing a live speed and a cancel button for an upload already gone.
+const TERMINAL_STATUSES = new Set(["DONE", "FAILED", "CANCELLED"]);
+
 function formatSpeed(bps: number): string {
   if (!Number.isFinite(bps) || bps <= 0) return "";
   if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
@@ -45,7 +50,7 @@ export function UploadProgress() {
       for (const upload of uploads.values()) {
         const spd = upload.speedBps ?? 0;
         const remaining = upload.bytesTotal - upload.bytesUploaded;
-        const isActive = upload.status !== "DONE" && upload.status !== "FAILED";
+        const isActive = !TERMINAL_STATUSES.has(upload.status);
         if (isActive && spd > 0 && remaining > 0) {
           next[upload.fileId] = remaining / spd;
         }
@@ -57,7 +62,7 @@ export function UploadProgress() {
 
   useEffect(() => {
     for (const upload of uploads.values()) {
-      if ((upload.status === "DONE" || upload.status === "FAILED") && !scheduledRef.current.has(upload.fileId)) {
+      if (TERMINAL_STATUSES.has(upload.status) && !scheduledRef.current.has(upload.fileId)) {
         scheduledRef.current.add(upload.fileId);
         setTimeout(() => {
           removeUpload(upload.fileId);
@@ -86,7 +91,7 @@ export function UploadProgress() {
         <div className="space-y-2 border-t border-rule px-3 py-3">
           {Array.from(uploads.values()).map((upload) => {
             const percent = upload.bytesTotal > 0 ? Math.round((upload.bytesUploaded / upload.bytesTotal) * 100) : 0;
-            const isActive = upload.status !== "DONE" && upload.status !== "FAILED";
+            const isActive = !TERMINAL_STATUSES.has(upload.status);
             const speedBps = upload.speedBps ?? 0;
             const speedStr = isActive ? formatSpeed(speedBps) : "";
             const etaStr = isActive ? formatEta(etas[upload.fileId] ?? 0) : "";
@@ -110,6 +115,8 @@ export function UploadProgress() {
                       "Complete"
                     ) : upload.status === "FAILED" ? (
                       "Failed"
+                    ) : upload.status === "CANCELLED" ? (
+                      "Cancelled"
                     ) : (
                       <span className="font-mono tabular-nums">{percent}%</span>
                     )}
@@ -119,7 +126,13 @@ export function UploadProgress() {
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-paper-3">
                   <div
                     className={`h-1.5 w-full origin-left rounded-full transition-transform duration-short ease-out ${
-                      upload.status === "FAILED" ? "bg-error" : upload.status === "DONE" ? "bg-success" : "bg-accent"
+                      upload.status === "FAILED"
+                        ? "bg-error"
+                        : upload.status === "CANCELLED"
+                          ? "bg-muted"
+                          : upload.status === "DONE"
+                            ? "bg-success"
+                            : "bg-accent"
                     }`}
                     style={{ transform: `scaleX(${percent / 100})` }}
                   />

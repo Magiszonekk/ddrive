@@ -69,7 +69,19 @@ export async function uploadAnonymousFile(
   const uploadedBlobs = new Map<number, UploadedBlobTransportInput>();
   let uploadedBytes = 0;
 
-  const CONCURRENCY = Math.min(config.defaultUploadConcurrency, chunkCount);
+  // Memory-budgeted, same derivation as upload.ts: live memory is
+  // concurrency * chunkSize * copies, so a fixed 20 workers put ~1 GB of chunk
+  // data in flight on a multi-GB file and could OOM the tab.
+  const CONCURRENCY = Math.min(
+    Math.max(
+      2,
+      Math.min(
+        config.defaultUploadConcurrency,
+        Math.floor(config.uploadInFlightBudgetBytes / (LEGACY_UPLOAD_CHUNK_SIZE_BYTES * 2)),
+      ),
+    ),
+    chunkCount,
+  );
 
   // Workers share one streaming iterator through a mutex, same pattern as
   // upload.ts — chunkFileStream reads the file incrementally so nothing
@@ -93,8 +105,8 @@ export async function uploadAnonymousFile(
 
   const uploadOneChunk = async (chunk: { index: number; data: Uint8Array }) => {
     const blobId = `${fileId}:chunk:${chunk.index}`;
-    const buffer = chunk.data.buffer.slice(chunk.data.byteOffset, chunk.data.byteOffset + chunk.data.byteLength) as ArrayBuffer;
-    const result = await uploadAnonymousBlobToApi(blobId, buffer, {
+    // No .buffer.slice() copy — fetch copies the body internally anyway.
+    const result = await uploadAnonymousBlobToApi(blobId, chunk.data, {
       "X-Anon-Session-Id": anonSessionId,
       "X-Chunk-Index": String(chunk.index),
       "X-Chunk-Count": String(chunkCount),

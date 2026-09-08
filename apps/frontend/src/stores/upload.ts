@@ -13,6 +13,7 @@ interface UploadState {
   addUpload: (fileId: string, totalBlobs: number, bytesTotal: number, fileName?: string) => void;
   updateUpload: (fileId: string, updates: Partial<UploadProgress>) => void;
   removeUpload: (fileId: string) => void;
+  removeUploadKeepController: (fileId: string) => void;
   getUpload: (fileId: string) => UploadProgress | undefined;
   registerController: (fileId: string, controller: AbortController) => void;
   cancelUpload: (fileId: string) => void;
@@ -53,6 +54,13 @@ export const useUploadStore = create<UploadState>((set, get) => ({
       const current = uploads.get(fileId);
       if (!current) return { uploads };
 
+      // CANCELLED is terminal. Without this guard, late progress updates from
+      // the still-unwinding pipeline (in-flight chunks resolving after abort)
+      // flip the row back to UPLOADING and the cancel looks like it failed.
+      if (current.status === "CANCELLED" && updates.status !== "CANCELLED") {
+        return { uploads };
+      }
+
       let speedBps = current.speedBps;
       if (updates.bytesUploaded !== undefined) {
         const now = Date.now();
@@ -92,7 +100,30 @@ export const useUploadStore = create<UploadState>((set, get) => ({
     });
   },
 
+  /**
+   * Drops the progress row but KEEPS the AbortController registered.
+   * Used when upload.ts swaps the placeholder id for the real fileId: the
+   * plain removeUpload() unregisters the controller, so a click on X landing
+   * in that window hit an empty map entry and `?.abort()` silently did
+   * nothing — a cancel that produced no error and no effect.
+   */
+  removeUploadKeepController: (fileId) => {
+    speedWindows.delete(fileId);
+    smoothedSpeeds.delete(fileId);
+    set((state) => {
+      const uploads = new Map(state.uploads);
+      uploads.delete(fileId);
+      return { uploads };
+    });
+  },
+
   getUpload: (fileId) => get().uploads.get(fileId),
   registerController: (fileId, controller) => uploadControllers.set(fileId, controller),
-  cancelUpload: (fileId) => uploadControllers.get(fileId)?.abort(),
+  cancelUpload: (fileId) => {
+    uploadControllers.get(fileId)?.abort();
+    // Reflect the cancel immediately rather than waiting for the pipeline to
+    // unwind — the abort can take a moment to propagate through in-flight
+    // requests, and until then the UI would still read as UPLOADING.
+    get().updateUpload(fileId, { status: "CANCELLED" as UploadStatus, speedBps: 0 });
+  },
 }));

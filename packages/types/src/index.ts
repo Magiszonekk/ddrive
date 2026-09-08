@@ -6,6 +6,9 @@ export enum UploadStatus {
   COMMITTING_MANIFEST = "COMMITTING_MANIFEST",
   DONE = "DONE",
   FAILED = "FAILED",
+  /** User-initiated abort — distinct from FAILED so the UI and telemetry
+   *  don't report a deliberate cancel as an error. */
+  CANCELLED = "CANCELLED",
 }
 
 export enum DownloadStatus {

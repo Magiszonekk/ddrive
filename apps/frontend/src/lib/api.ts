@@ -27,6 +27,13 @@ export interface BlobUploadResponse {
 export interface BlobUploadRequestOptions {
   extraHeaders?: Record<string, string>;
   authToken?: string;
+  /**
+   * Aborts the in-flight PUT itself. Without this the caller's
+   * AbortController only gets checked BETWEEN retry attempts, so a cancel
+   * during a multi-second chunk upload looks like a dead button while the
+   * request runs to completion in the background.
+   */
+  signal?: AbortSignal;
 }
 
 export class BlobUploadError extends Error {
@@ -36,13 +43,26 @@ export class BlobUploadError extends Error {
   }
 }
 
-function toUploadBody(data: ArrayBuffer | Uint8Array): ArrayBuffer {
-  return data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+/**
+ * Body accepted by the blob upload endpoints.
+ *
+ * NOTE: do NOT "simplify" this to `BufferSource`. Under TS 5.7+ `Uint8Array`
+ * is parameterised (`Uint8Array<ArrayBufferLike>`) and `ArrayBufferLike`
+ * includes `SharedArrayBuffer`, which is not assignable to `BufferSource`
+ * (TS2345, missing `resizable`/`resize`/`detached`/`transfer`). The explicit
+ * union is what actually typechecks.
+ */
+export type UploadBody = ArrayBuffer | Uint8Array<ArrayBufferLike>;
+
+function toUploadBody(data: UploadBody): BodyInit {
+  // Pass the view straight through: fetch copies the body internally, so an
+  // extra .buffer.slice() here was a pure per-chunk memory duplicate.
+  return data as BodyInit;
 }
 
 export async function uploadBlobToApi(
   blobId: string,
-  data: ArrayBuffer | Uint8Array,
+  data: UploadBody,
   options: BlobUploadRequestOptions = {},
 ): Promise<BlobUploadResponse> {
   const authHeaders = options.authToken
@@ -57,6 +77,7 @@ export async function uploadBlobToApi(
       ...(options.extraHeaders ?? {}),
     },
     body: toUploadBody(data),
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -70,8 +91,9 @@ export async function uploadBlobToApi(
 /** Anonymous chunk upload (Phase 6) — no auth header, gated by fileId ownership server-side. */
 export async function uploadAnonymousBlobToApi(
   blobId: string,
-  data: ArrayBuffer | Uint8Array,
+  data: UploadBody,
   extraHeaders: Record<string, string> = {},
+  signal?: AbortSignal,
 ): Promise<BlobUploadResponse> {
   const response = await fetch(`${API_BASE}/api/anon-blob/${blobId}`, {
     method: "PUT",
@@ -80,6 +102,7 @@ export async function uploadAnonymousBlobToApi(
       ...extraHeaders,
     },
     body: toUploadBody(data),
+    signal,
   });
 
   if (!response.ok) {
