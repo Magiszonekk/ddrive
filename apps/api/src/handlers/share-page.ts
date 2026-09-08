@@ -11,7 +11,7 @@
 import { db } from "@ddv4/database";
 import { resolveShareForPage } from "../resolvers/sharing.js";
 import { readBlobBytes } from "./blob.js";
-import { decryptServerSide } from "../storage/server-crypto.js";
+import { decryptServerSide, plaintextSizeFor } from "../storage/server-crypto.js";
 import { serverConfig } from "@ddv4/config/server";
 import { escapeHtml, faviconTags } from "./seo-helpers.js";
 
@@ -237,7 +237,28 @@ ${faviconTags(origin)}
   });
 }
 
-async function fetchAllChunksDecrypted(fileId: string, ownerUserId: string, chunkCount: number): Promise<Uint8Array> {
+interface ShareChunk {
+  index: number;
+  row: {
+    blobId: string; ownerUserId: string; storageKind: string; storagePath: string;
+    discordMessageId: string | null; discordChannelId: string | null; webhookId: string | null;
+    sizeBytes: bigint; contentHash: string | null; healthStatus: string | null;
+    healthCheckedAt: Date | null; createdAt: Date; placements: unknown;
+  };
+  plaintextSizeBytes: number;
+  /** Cumulative plaintext offset at which this chunk starts. */
+  offset: number;
+}
+
+/**
+ * Chunk index for a share, WITHOUT reading any payload bytes.
+ *
+ * Sizes come from `plaintextSizeFor(ciphertextSize)` so the total content
+ * length is known up front from DB metadata alone — no provider round-trips,
+ * no buffering. This is what makes Content-Length + Range possible while
+ * keeping peak memory at one chunk (~8 MiB) instead of the whole file.
+ */
+async function getShareChunks(fileId: string, ownerUserId: string, chunkCount: number): Promise<ShareChunk[]> {
   const rows = await db.blobTransport.findMany({
     where: { ownerUserId, blobId: { startsWith: `${fileId}:chunk:` } },
     include: { placements: true },
@@ -248,25 +269,92 @@ async function fetchAllChunksDecrypted(fileId: string, ownerUserId: string, chun
     if (m) byIndex.set(Number(m[1]), row);
   }
 
-  const buffers: Uint8Array[] = [];
+  const chunks: ShareChunk[] = [];
+  let running = 0;
   for (let i = 0; i < chunkCount; i++) {
     const row = byIndex.get(i);
     if (!row) throw new Error(`Missing chunk ${i}`);
-    const encrypted = await readBlobBytes({
-      blobId: row.blobId, ownerUserId: row.ownerUserId, storageKind: row.storageKind,
-      storagePath: row.storagePath, discordMessageId: row.discordMessageId,
-      discordChannelId: row.discordChannelId, webhookId: row.webhookId,
-      sizeBytes: row.sizeBytes, contentHash: row.contentHash, healthStatus: row.healthStatus,
-      healthCheckedAt: row.healthCheckedAt, createdAt: row.createdAt,
-      placements: row.placements as never,
-    });
-    buffers.push(decryptServerSide(encrypted));
+    const plaintextSizeBytes = plaintextSizeFor(Number(row.sizeBytes));
+    chunks.push({ index: i, row: row as never, plaintextSizeBytes, offset: running });
+    running += plaintextSizeBytes;
   }
-  const total = buffers.reduce((s, b) => s + b.byteLength, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const b of buffers) { out.set(b, offset); offset += b.byteLength; }
-  return out;
+  return chunks;
+}
+
+/**
+ * Streams the plaintext byte range [start, end] of a share as a web
+ * ReadableStream, fetching + decrypting ONE chunk at a time.
+ *
+ * Replaces the previous fetchAllChunksDecrypted(), which concatenated every
+ * chunk into a single Uint8Array before responding: a 2.8 GB / 353-chunk
+ * share allocated the decrypted chunk array PLUS the full-size output buffer
+ * PLUS the .slice() copy handed to Response, peaking near 6 GB RSS and
+ * getting the API OOM-killed by the kernel (taking the whole box into a load
+ * storm with it). Peak memory here is one chunk, regardless of file size.
+ *
+ * `pull` is called only when the consumer is ready, so backpressure from a
+ * slow client throttles provider reads instead of racing ahead into RAM.
+ */
+function streamShareRange(chunks: ShareChunk[], start: number, end: number): ReadableStream<Uint8Array> {
+  let i = chunks.findIndex((c) => c.offset + c.plaintextSizeBytes > start);
+  if (i < 0) i = chunks.length;
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (i >= chunks.length || chunks[i]!.offset > end) {
+        controller.close();
+        return;
+      }
+      const chunk = chunks[i]!;
+      i += 1;
+      try {
+        const encrypted = await readBlobBytes(chunk.row as never);
+        const plaintext = decryptServerSide(encrypted);
+        const sliceStart = Math.max(0, start - chunk.offset);
+        const sliceEnd = Math.min(plaintext.byteLength - 1, end - chunk.offset);
+        if (sliceStart <= sliceEnd) controller.enqueue(plaintext.subarray(sliceStart, sliceEnd + 1));
+      } catch (err) {
+        // Abort the response body rather than silently truncating it — a
+        // short read must surface as a failed download, not a corrupt file.
+        controller.error(err);
+      }
+    },
+  });
+}
+
+/** Shared body builder for /media and /download: Range-aware, streamed. */
+function buildShareFileResponse(
+  chunks: ShareChunk[],
+  rangeHeader: string | null,
+  headers: Record<string, string>,
+): Response {
+  const totalSize = chunks.reduce((s, c) => s + c.plaintextSizeBytes, 0);
+
+  let start = 0;
+  let end = totalSize - 1;
+  let status = 200;
+
+  if (rangeHeader) {
+    const match = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
+    if (!match) return new Response("Invalid range", { status: 416 });
+    if (match[1]) {
+      start = parseInt(match[1], 10);
+      end = match[2] ? Math.min(parseInt(match[2], 10), totalSize - 1) : totalSize - 1;
+    } else if (match[2]) {
+      // Suffix form: "bytes=-N" == last N bytes.
+      start = Math.max(0, totalSize - parseInt(match[2], 10));
+    }
+    if (start >= totalSize || start > end) {
+      return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${totalSize}` } });
+    }
+    status = 206;
+    headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
+  }
+
+  headers["Accept-Ranges"] = "bytes";
+  headers["Content-Length"] = String(end - start + 1);
+
+  return new Response(streamShareRange(chunks, start, end), { status, headers });
 }
 
 /** GET /s/:shareId/media — inline embed source (image/video/audio, no download disposition). */
@@ -277,9 +365,10 @@ export async function handleSharePageMedia(req: Request, params: { shareId: stri
   if (!share || !share.allowPreview || share.shareType !== "FILE" || !share.file) return new Response("Not found", { status: 404 });
 
   try {
-    const bytes = await fetchAllChunksDecrypted(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
-    return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
-      headers: { "Content-Type": share.file.mimeType ?? "application/octet-stream", "Cache-Control": "private, max-age=300" },
+    const chunks = await getShareChunks(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
+    return buildShareFileResponse(chunks, req.headers.get("range"), {
+      "Content-Type": share.file.mimeType ?? "application/octet-stream",
+      "Cache-Control": "private, max-age=300",
     });
   } catch {
     return new Response("Failed to load media", { status: 500 });
@@ -315,13 +404,11 @@ export async function handleSharePageDownload(req: Request, params: { shareId: s
   if (!share || !share.allowContent || share.shareType !== "FILE" || !share.file) return new Response("Not found", { status: 404 });
 
   try {
-    const bytes = await fetchAllChunksDecrypted(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
+    const chunks = await getShareChunks(share.fileId ?? "", share.file.ownerUserId, share.file.chunkCount);
     const fileName = share.file.name ?? "download";
-    return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, {
-      headers: {
-        "Content-Type": share.file.mimeType ?? "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
-      },
+    return buildShareFileResponse(chunks, req.headers.get("range"), {
+      "Content-Type": share.file.mimeType ?? "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
     });
   } catch {
     return new Response("Failed to load file", { status: 500 });

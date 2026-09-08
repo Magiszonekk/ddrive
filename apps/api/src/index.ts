@@ -11,6 +11,7 @@ import { handleDropPage } from "./handlers/drop.js";
 import { handleLoginPage } from "./handlers/login.js";
 import { handleRobots, handleSitemap, handleOgImage } from "./handlers/seo.js";
 import { isFaviconPath, handleFavicon } from "./handlers/favicon.js";
+import { handleWebDav } from "./handlers/webdav/index.js";
 import { checkRateLimit } from "./middleware/rate-limit.js";
 import { serverConfig } from "@ddv4/config/server";
 import { pluginRegistry } from "./plugin-registry.js";
@@ -23,6 +24,13 @@ async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;
+
+  // WebDAV (/dav) — must be matched before the CORS preflight branch and the
+  // route table below, because DAV uses verbs (PROPFIND, MKCOL, MOVE, LOCK)
+  // that nothing else here understands, and it answers OPTIONS itself.
+  if (pathname === "/dav" || pathname.startsWith("/dav/")) {
+    return handleWebDav(req);
+  }
 
   // CORS preflight
   if (method === "OPTIONS") {
@@ -282,12 +290,32 @@ const server = createServer(async (nodeReq, nodeRes) => {
     if (response.body) {
       const reader = response.body.getReader();
       const pump = async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          nodeRes.write(value);
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            // Honour backpressure: nodeRes.write() returns false once the
+            // socket's buffer is full. Ignoring it lets the reader race ahead
+            // of a slow client and queue the ENTIRE response in Node's memory
+            // — which defeats streaming and OOM-killed the API on multi-GB
+            // share downloads even after the handler itself stopped
+            // buffering. Wait for 'drain' before pulling the next chunk.
+            if (!nodeRes.write(value)) {
+              await new Promise<void>((resolve, reject) => {
+                nodeRes.once("drain", resolve);
+                nodeRes.once("close", () => reject(new Error("client disconnected")));
+                nodeRes.once("error", reject);
+              });
+            }
+          }
+          nodeRes.end();
+        } catch {
+          // Client hung up or the source stream failed — release the upstream
+          // reader so provider fetches stop instead of running to completion
+          // for a response nobody is reading any more.
+          await reader.cancel().catch(() => undefined);
+          if (!nodeRes.writableEnded) nodeRes.end();
         }
-        nodeRes.end();
       };
       await pump();
     } else {
